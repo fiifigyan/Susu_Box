@@ -1,0 +1,2 @@
+import { calculateSurplusBreakdown } from '../src/config/susu-rules';
+describe('surplus allocation', () => { it('allocates net surplus', () => { const result = calculateSurplusBreakdown(35, 22, 700); const total = result.allocation.appMaintenance + result.allocation.emergencyFund + result.allocation.savingsPool + result.allocation.adminCompensation; expect(total).toBeCloseTo(result.fees.netAfterFees - 700, 2); }); });

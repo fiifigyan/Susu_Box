@@ -1,0 +1,8 @@
+import React from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../types/navigation';
+import { useDefaultPrevention } from '../../hooks/useDefaultPrevention';
+type Props = NativeStackScreenProps<RootStackParamList, 'Defaulters'>;
+export function DefaultersScreen({ route }: Props) { const { defaulters, loading } = useDefaultPrevention(route.params.groupId); if (loading) return <View style={styles.center}><ActivityIndicator color="#2563EB" /></View>; return <ScrollView style={styles.container}>{defaulters.length === 0 ? <Text style={styles.empty}>No defaulted members.</Text> : defaulters.map(defaulter => <View key={defaulter.id} style={styles.card}><Text style={styles.name}>{defaulter.user.firstName} {defaulter.user.lastName}</Text><Text style={styles.detail}>{defaulter.user.phone}</Text><Text style={styles.detail}>Missed contributions: {defaulter.totalMissed}</Text><Text style={styles.reason}>{defaulter.defaultReason || 'Post-payout default'}</Text></View>)}</ScrollView>; }
+const styles = StyleSheet.create({ container: { flex: 1, backgroundColor: '#F9FAFB', padding: 16 }, center: { flex: 1, justifyContent: 'center', alignItems: 'center' }, empty: { color: '#6B7280', textAlign: 'center', marginTop: 40 }, card: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 16, marginBottom: 10, borderLeftWidth: 4, borderLeftColor: '#DC2626' }, name: { fontSize: 17, fontWeight: '700' }, detail: { color: '#6B7280', marginTop: 5 }, reason: { color: '#B91C1C', marginTop: 8 } });

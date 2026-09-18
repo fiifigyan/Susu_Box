@@ -1,0 +1,5 @@
+import { Request, Response, NextFunction } from 'express';
+import { securityDepositService } from '../services/securityDeposit.service';
+import { prisma } from '../config/database';
+export class DepositController { async collect(req: Request, res: Response, next: NextFunction): Promise<void> { try { const userId = (req as { userId?: string }).userId; const { groupId, amount, transactionRef } = req.body; const member = await prisma.groupMember.findFirst({ where: { groupId, userId } }); if (!member) throw Object.assign(new Error('Not a group member'), { statusCode: 403 }); res.json({ success: true, data: await securityDepositService.collectDeposit(member.id, amount, transactionRef) }); } catch (error) { next(error); } } async status(req: Request, res: Response, next: NextFunction): Promise<void> { try { res.json({ success: true, data: await securityDepositService.checkDepositRequirement(req.params.groupId) }); } catch (error) { next(error); } } }
+export const depositController = new DepositController();

@@ -1,0 +1,2 @@
+import { getMoMoBankCode, toGHS, toPesewas } from '../src/config/payment';
+describe('payment helpers', () => { it('converts amounts', () => { expect(toPesewas(22.105)).toBe(2211); expect(toGHS(2211)).toBe(22.11); }); it('maps Ghana channels', () => { expect(getMoMoBankCode('mtn_mobile_money')).toBe('MTN'); expect(getMoMoBankCode('vodafone_cash')).toBe('VOD'); expect(getMoMoBankCode('airteltigo_money')).toBe('ATL'); }); });

@@ -1,0 +1,9 @@
+import React from 'react';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../types/navigation';
+import { useAuth } from '../../contexts/AuthContext';
+type Navigation = NativeStackNavigationProp<RootStackParamList>;
+export function ProfileScreen() { const { user, logout } = useAuth(); const navigation = useNavigation<Navigation>(); return <View style={styles.container}><Text style={styles.title}>Profile</Text><Text style={styles.name}>{user?.firstName} {user?.lastName}</Text><Text style={styles.detail}>{user?.email}</Text><Text style={styles.detail}>{user?.phone}</Text><TouchableOpacity style={styles.auto} onPress={() => navigation.navigate('SetupAutoCharge')}><Text style={styles.autoText}>Set up auto-charge</Text></TouchableOpacity><TouchableOpacity style={styles.button} onPress={() => Alert.alert('Sign out', 'Are you sure?', [{ text: 'Cancel', style: 'cancel' }, { text: 'Sign out', style: 'destructive', onPress: () => { void logout(); } }])}><Text style={styles.buttonText}>Sign out</Text></TouchableOpacity></View>; }
+const styles = StyleSheet.create({ container: { flex: 1, padding: 24, backgroundColor: '#F9FAFB' }, title: { fontSize: 28, fontWeight: '700', marginBottom: 24 }, name: { fontSize: 20, fontWeight: '600' }, detail: { color: '#6B7280', marginTop: 8 }, auto: { marginTop: 32, padding: 14, borderRadius: 10, backgroundColor: '#DBEAFE' }, autoText: { textAlign: 'center', color: '#1D4ED8', fontWeight: '700' }, button: { marginTop: 12, padding: 14, borderRadius: 10, backgroundColor: '#FEE2E2' }, buttonText: { textAlign: 'center', color: '#B91C1C', fontWeight: '700' } });

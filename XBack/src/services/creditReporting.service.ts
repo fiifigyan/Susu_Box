@@ -1,0 +1,5 @@
+import { prisma } from '../config/database';
+import { logger } from '../utils/logger';
+export interface DefaultDetails { groupId: string; amountOwed: number; daysMissed: number; reason: string; }
+export class CreditReportingService { async reportDefault(userId: string, details: DefaultDetails) { const user = await prisma.user.findUnique({ where: { id: userId } }); if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 }); logger.info('Credit default report queued', { userId, details, providers: ['XDS_DATA_GHANA', 'DUN_BRADSTREET', 'MY_CREDIT_SCORE'] }); await prisma.user.update({ where: { id: userId }, data: { creditReported: true, creditReportedAt: new Date() } }); return { reported: true, provider: 'STUB' }; } async checkCreditStatus(userId: string) { const user = await prisma.user.findUnique({ where: { id: userId }, select: { defaultCount: true, creditReported: true, creditReportedAt: true } }); if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 }); return user; } }
+export const creditReportingService = new CreditReportingService();

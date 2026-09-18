@@ -1,0 +1,2 @@
+ALTER TABLE "GroupMember" DROP COLUMN IF EXISTS "securityDeposit", DROP COLUMN IF EXISTS "securityDepositPaid", DROP COLUMN IF EXISTS "securityDepositPaidAt", DROP COLUMN IF EXISTS "securityDepositRefunded", DROP COLUMN IF EXISTS "securityDepositRefundedAt", DROP COLUMN IF EXISTS "securityDepositForfeited", DROP COLUMN IF EXISTS "securityDepositForfeitReason";
+ALTER TABLE "SusuGroup" DROP COLUMN IF EXISTS "securityDepositRequired", DROP COLUMN IF EXISTS "securityDepositPercent";
