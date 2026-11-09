@@ -24,6 +24,13 @@ const verifyOTPSchema = z.object({
   otp: z.string().length(6, 'OTP must be 6 digits'),
 });
 
+const forgotPasswordSchema = z.object({ email: z.string().email() });
+const resetPasswordSchema = z.object({
+  email: z.string().email(),
+  otp: z.string().length(6, 'OTP must be 6 digits'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
 export class AuthController {
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -91,6 +98,29 @@ export class AuthController {
         success: true,
         message: 'OTP resent successfully',
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async forgotPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { email } = forgotPasswordSchema.parse(req.body);
+      await authService.requestPasswordReset(email);
+      res.status(200).json({
+        success: true,
+        message: 'If that account exists, a password reset code has been created.',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resetPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = resetPasswordSchema.parse(req.body);
+      await authService.resetPassword(data);
+      res.status(200).json({ success: true, message: 'Password reset successfully.' });
     } catch (error) {
       next(error);
     }

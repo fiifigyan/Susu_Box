@@ -144,7 +144,7 @@ export class InviteService {
       });
     }
 
-    return `https://xsusu.com/join/${shareCode}`;
+    return `xsusu://join/${shareCode}`;
   }
 
   /**
@@ -229,6 +229,44 @@ export class InviteService {
       group: invite.group,
       position: invite.position,
     };
+  }
+
+  /** Join a forming group from its share code and assign the next open position. */
+  async joinByShareCode(shareCode: string, userId: string): Promise<{
+    group: any;
+    position: number;
+  }> {
+    const group = await prisma.susuGroup.findUnique({ where: { shareCode } });
+    if (!group) throw Object.assign(new Error('Invalid or expired share link'), { statusCode: 404 });
+    if (group.status !== 'FORMING') {
+      throw Object.assign(new Error('This group is no longer accepting members'), { statusCode: 400 });
+    }
+
+    const existingMember = await prisma.groupMember.findFirst({ where: { groupId: group.id, userId } });
+    if (existingMember) throw Object.assign(new Error('You are already a member of this group'), { statusCode: 409 });
+
+    const members = await prisma.groupMember.findMany({
+      where: { groupId: group.id },
+      select: { position: true },
+    });
+    const occupied = new Set(members.map(member => member.position));
+    const position = Array.from({ length: group.memberCount }, (_, index) => index + 1)
+      .find(candidate => !occupied.has(candidate));
+    if (!position) throw Object.assign(new Error('This group is already full'), { statusCode: 409 });
+
+    await prisma.$transaction([
+      prisma.groupMember.create({ data: { groupId: group.id, userId, position } }),
+      prisma.auditLog.create({
+        data: {
+          userId,
+          groupId: group.id,
+          action: 'GROUP_JOINED_BY_LINK',
+          details: `Joined "${group.name}" as #${position} using a share link`,
+        },
+      }),
+    ]);
+
+    return { group, position };
   }
 
   /**

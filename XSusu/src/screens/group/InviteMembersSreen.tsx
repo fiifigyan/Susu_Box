@@ -1,22 +1,50 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
-  Alert, Share, ActivityIndicator, RefreshControl,
-} from 'react-native';
+import { RefreshControl, ScrollView, Share, StyleSheet, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { RootStackParamList } from '../../types/navigation';
 import { inviteService, PendingInvite } from '../../services/inviteService';
-import { groupService } from '../../services/groupService';
-import { useFocusEffect } from '@react-navigation/native';
+import { groupService, type Group } from '../../services/groupService';
+import { useTheme } from '../../hooks/useTheme';
+import { useToast } from '../../hooks/useToast';
+import { useHaptics } from '../../hooks/useHaptics';
+import { staggerDelay } from '../../theme';
+import {
+  Screen,
+  Text,
+  Card,
+  Input,
+  Button,
+  Badge,
+  Chip,
+  Avatar,
+  Divider,
+  Skeleton,
+  EmptyState,
+  ProgressBar,
+  ScreenHeader,
+  SegmentedControl,
+  ConfirmSheet,
+  IconButton,
+  type Segment,
+} from '../../components/ui';
+import { formatCurrency, formatPhone } from '../../utils/formatters';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InviteMembers'>;
+type Tab = 'INVITE' | 'PENDING';
 
-export function InviteMembersScreen({ route, navigation }: Props) {
+export function InviteMembersScreen({ route }: Props) {
   const { groupId } = route.params;
-  
-  const [group, setGroup] = useState<any>(null);
+  const theme = useTheme();
+  const toast = useToast();
+  const haptics = useHaptics();
+
+  const [group, setGroup] = useState<Group | null>(null);
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
@@ -25,7 +53,11 @@ export function InviteMembersScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'INVITE' | 'PENDING'>('INVITE');
+  const [activeTab, setActiveTab] = useState<Tab>('INVITE');
+  const [copied, setCopied] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<PendingInvite | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -45,7 +77,7 @@ export function InviteMembersScreen({ route, navigation }: Props) {
       setPendingInvites(invitesResponse);
       setShareUrl(shareResponse);
     } catch (error) {
-      console.error('Failed to fetch data:', error);
+      toast.fromError(error, 'Failed to load invite details.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -54,7 +86,7 @@ export function InviteMembersScreen({ route, navigation }: Props) {
 
   const handleInviteByPhone = async () => {
     if (!phone || !position) {
-      Alert.alert('Error', 'Phone number and position are required');
+      toast.warning('Phone number and position are required');
       return;
     }
 
@@ -68,18 +100,22 @@ export function InviteMembersScreen({ route, navigation }: Props) {
       );
 
       if (result.status === 'ADDED') {
-        Alert.alert('Success', 'Member added directly!');
+        toast.success('Member added directly!', { silent: true });
       } else {
-        Alert.alert('Invite Sent', `Invite code ${result.inviteCode} sent via SMS`);
+        toast.success('Invite sent', {
+          description: `Code ${result.inviteCode} sent via SMS`,
+          silent: true,
+        });
       }
+      haptics.success();
 
       // Clear form
       setPhone('');
       setName('');
       setPosition('');
       fetchData();
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to invite member');
+    } catch (error) {
+      toast.fromError(error, 'Failed to invite member');
     } finally {
       setAdding(false);
     }
@@ -87,315 +123,379 @@ export function InviteMembersScreen({ route, navigation }: Props) {
 
   const handleShareLink = async () => {
     if (!shareUrl) return;
-    
+
     try {
       await Share.share({
         message: `🇬🇭 Join my Susu group!\n\nGroup: ${group?.name}\nDaily Pay: GHS ${group?.dailyContribution}\nPayout: GHS ${group?.dailyPayout}\nMembers: ${group?.memberCount}\n\nJoin here: ${shareUrl}\n\nDownload XSusu to join!`,
       });
     } catch (error) {
-      console.error('Share failed:', error);
+      toast.fromError(error, 'Could not open the share sheet.');
     }
   };
 
   const handleCopyLink = async () => {
     if (!shareUrl) return;
     await Clipboard.setStringAsync(shareUrl);
-    Alert.alert('Copied', 'Invite link copied to clipboard');
+    haptics.success();
+    // Swaps the icon to a tick for a moment, instead of an alert.
+    setCopied(true);
+    toast.success('Invite link copied', { silent: true });
+    setTimeout(() => setCopied(false), 1800);
   };
 
-  const handleCancelInvite = async (inviteId: string) => {
-    Alert.alert('Cancel Invite', 'Are you sure?', [
-      { text: 'No', style: 'cancel' },
-      {
-        text: 'Yes, Cancel',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await inviteService.cancelInvite(inviteId);
-            fetchData();
-          } catch (error: any) {
-            Alert.alert('Error', error.message);
-          }
-        },
-      },
-    ]);
+  const handleCancelInvite = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      await inviteService.cancelInvite(cancelTarget.id);
+      toast.success('Invite cancelled', { silent: true });
+      fetchData();
+    } catch (error) {
+      toast.fromError(error, 'Could not cancel the invite.');
+    } finally {
+      setCancelling(false);
+      setCancelTarget(null);
+    }
   };
 
   const onRefresh = () => {
     setRefreshing(true);
+    haptics.light();
     fetchData();
   };
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563EB" />
-      </View>
+      <Screen padded edges={['top']}>
+        <ScreenHeader title="Invite members" showBack />
+        <View style={{ gap: theme.spacing.lg }}>
+          <Skeleton height={120} radius="2xl" />
+          <Skeleton height={44} radius="lg" />
+          <Skeleton height={220} radius="2xl" />
+        </View>
+      </Screen>
     );
   }
 
-  const currentMemberCount = group?.members?.length || 0;
-  const remainingSpots = (group?.memberCount || 0) - currentMemberCount;
-  const takenPositions = group?.members?.map((m: any) => m.position) || [];
-  const pendingPositions = pendingInvites.map(i => i.position);
+  const members = group?.members ?? [];
+  const currentMemberCount = members.length;
+  const takenPositions = members.map(member => member.position);
+  const pendingPositions = pendingInvites.map(invite => invite.position);
   const unavailablePositions = [...takenPositions, ...pendingPositions];
   const availablePositions = Array.from(
     { length: group?.memberCount || 0 },
-    (_, i) => i + 1
-  ).filter((p: number) => !unavailablePositions.includes(p));
+    (_, index) => index + 1
+  ).filter((value: number) => !unavailablePositions.includes(value));
+
+  const segments: Segment<Tab>[] = [
+    { value: 'INVITE', label: 'Invite' },
+    { value: 'PENDING', label: 'Pending', count: pendingInvites.length },
+  ];
 
   return (
-    <ScrollView
-      style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-    >
-      {/* Group Info */}
-      <View style={styles.groupInfo}>
-        <Text style={styles.groupName}>{group?.name}</Text>
-        <Text style={styles.progressText}>
-          {currentMemberCount}/{group?.memberCount} members joined
-        </Text>
-        <View style={styles.progressBar}>
-          <View
-            style={[
-              styles.progressFill,
-              { width: `${(currentMemberCount / (group?.memberCount || 1)) * 100}%` },
-            ]}
+    <Screen edges={['top']}>
+      <View style={{ paddingHorizontal: theme.screenPadding, gap: theme.spacing.lg }}>
+        <ScreenHeader title="Invite members" showBack />
+
+        {/* Progress */}
+        <Card variant="gradient" gradient={theme.colors.gradientBalance}>
+          <View style={{ gap: theme.spacing.md }}>
+            <Text variant="h3" color={theme.colors.textInverse} numberOfLines={1}>
+              {group?.name}
+            </Text>
+            <ProgressBar
+              progress={currentMemberCount / (group?.memberCount || 1)}
+              color={theme.colors.textInverse}
+              trackColor={`${theme.colors.textInverse}33`}
+              accessibilityLabel={`${currentMemberCount} of ${group?.memberCount} members joined`}
+            />
+            <Text variant="bodySmall" color={`${theme.colors.textInverse}B3`}>
+              {currentMemberCount}/{group?.memberCount} members joined ·{' '}
+              {availablePositions.length} position
+              {availablePositions.length === 1 ? '' : 's'} open
+            </Text>
+          </View>
+        </Card>
+
+        <SegmentedControl segments={segments} value={activeTab} onChange={setActiveTab} />
+      </View>
+
+      <KeyboardAwareScrollView
+        contentContainerStyle={{
+          paddingHorizontal: theme.screenPadding,
+          paddingTop: theme.spacing.lg,
+          paddingBottom: theme.spacing['5xl'],
+          gap: theme.spacing.xl,
+        }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        bottomOffset={24}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
           />
-        </View>
-      </View>
+        }
+      >
+        {activeTab === 'INVITE' ? (
+          <Animated.View entering={FadeIn.duration(220)} style={{ gap: theme.spacing.xl }}>
+            {/* Share link */}
+            <Card variant="outlined">
+              <View style={{ gap: theme.spacing.md }}>
+                <View style={styles.sectionHeader}>
+                  <Text variant="h3">Share a link</Text>
+                  <IconButton
+                    icon={showQR ? 'list' : 'qr-code'}
+                    onPress={() => setShowQR(current => !current)}
+                    accessibilityLabel={showQR ? 'Hide QR code' : 'Show QR code'}
+                    size="sm"
+                    variant="tinted"
+                  />
+                </View>
 
-      {/* Tab Switcher */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'INVITE' && styles.tabActive]}
-          onPress={() => setActiveTab('INVITE')}
-        >
-          <Text style={[styles.tabText, activeTab === 'INVITE' && styles.tabTextActive]}>
-            Invite Members
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'PENDING' && styles.tabActive]}
-          onPress={() => setActiveTab('PENDING')}
-        >
-          <Text style={[styles.tabText, activeTab === 'PENDING' && styles.tabTextActive]}>
-            Pending ({pendingInvites.length})
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {activeTab === 'INVITE' ? (
-        <>
-          {/* Share Link Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Share Invite Link</Text>
-            <View style={styles.shareCard}>
-              <Text style={styles.shareDescription}>
-                Share this link via WhatsApp, SMS, or social media.
-                Anyone with the link can view group details and request to join.
-              </Text>
-              <View style={styles.shareUrlContainer}>
-                <Text style={styles.shareUrl} numberOfLines={1}>
-                  {shareUrl || 'Generating...'}
+                <Text variant="bodySmall" tone="secondary">
+                  Anyone with this link can view the group and request to join.
                 </Text>
-              </View>
-              <View style={styles.shareButtons}>
-                <TouchableOpacity style={styles.shareButton} onPress={handleShareLink}>
-                  <Ionicons name="share-social" size={20} color="#FFFFFF" />
-                  <Text style={styles.shareButtonText}>Share</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.copyButton} onPress={handleCopyLink}>
-                  <Ionicons name="copy" size={20} color="#2563EB" />
-                  <Text style={styles.copyButtonText}>Copy</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
 
-          {/* Divider */}
-          <View style={styles.divider}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OR</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          {/* Add by Phone Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Add by Phone Number</Text>
-            <View style={styles.formCard}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Full Name</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Abena Mensah"
-                  value={name}
-                  onChangeText={setName}
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Phone Number</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="0244123456"
-                  keyboardType="phone-pad"
-                  value={phone}
-                  onChangeText={setPhone}
-                  maxLength={10}
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Position (1-{group?.memberCount})</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g., 5"
-                  keyboardType="numeric"
-                  value={position}
-                  onChangeText={setPosition}
-                />
-                <Text style={styles.hint}>
-                  Available: {availablePositions.slice(0, 10).join(', ')}
-                  {availablePositions.length > 10 ? '...' : ''}
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.addButton, adding && styles.buttonDisabled]}
-                onPress={handleInviteByPhone}
-                disabled={adding || !phone || !position}
-              >
-                {adding ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                {showQR && shareUrl ? (
+                  <Animated.View
+                    entering={FadeIn.duration(240)}
+                    style={[
+                      styles.qrWrapper,
+                      {
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: theme.radius.lg,
+                        padding: theme.spacing.lg,
+                      },
+                    ]}
+                    accessible
+                    accessibilityRole="image"
+                    accessibilityLabel="QR code for the group invite link"
+                  >
+                    {/* Always rendered on white: QR scanners need the contrast. */}
+                    <QRCode value={shareUrl} size={180} backgroundColor="#FFFFFF" />
+                  </Animated.View>
                 ) : (
-                  <>
-                    <Ionicons name="person-add" size={20} color="#FFFFFF" />
-                    <Text style={styles.addButtonText}>Invite Member</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </>
-      ) : (
-        /* Pending Invites Tab */
-        <View style={styles.section}>
-          {pendingInvites.length > 0 ? (
-            pendingInvites.map((invite) => (
-              <View key={invite.id} style={styles.pendingCard}>
-                <View style={styles.pendingHeader}>
-                  <View style={styles.pendingInfo}>
-                    <Text style={styles.pendingName}>
-                      {invite.name || invite.phone}
-                    </Text>
-                    <Text style={styles.pendingPhone}>{invite.phone}</Text>
-                    <Text style={styles.pendingPosition}>
-                      Position #{invite.position}
+                  <View
+                    style={[
+                      styles.urlBox,
+                      {
+                        backgroundColor: theme.colors.surfaceSunken,
+                        borderRadius: theme.radius.md,
+                        padding: theme.spacing.md,
+                      },
+                    ]}
+                  >
+                    <Text variant="mono" tone="brand" numberOfLines={1}>
+                      {shareUrl || 'Generating…'}
                     </Text>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => handleCancelInvite(invite.id)}
-                    style={styles.cancelButton}
-                  >
-                    <Ionicons name="close-circle" size={24} color="#DC2626" />
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.pendingFooter}>
-                  <Text style={styles.pendingCode}>
-                    Code: {invite.inviteCode}
-                  </Text>
-                  <Text style={styles.pendingExpiry}>
-                    Expires: {new Date(invite.expiresAt).toLocaleDateString()}
-                  </Text>
-                </View>
-              </View>
-            ))
-          ) : (
-            <View style={styles.emptyState}>
-              <Ionicons name="mail-outline" size={48} color="#D1D5DB" />
-              <Text style={styles.emptyText}>No pending invites</Text>
-            </View>
-          )}
-        </View>
-      )}
+                )}
 
-      {/* Current Members */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          Current Members ({currentMemberCount})
-        </Text>
-        {group?.members?.map((member: any) => (
-          <View key={member.id} style={styles.memberRow}>
-            <Text style={styles.memberPosition}>#{member.position}</Text>
-            <Text style={styles.memberName}>
-              {member.user?.firstName} {member.user?.lastName}
-            </Text>
-            {member.position === 1 && (
-              <View style={styles.adminBadge}>
-                <Text style={styles.adminBadgeText}>ADMIN</Text>
+                <View style={[styles.buttonRow, { gap: theme.spacing.md }]}>
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      label="Share"
+                      onPress={() => void handleShareLink()}
+                      icon="share-social"
+                      fullWidth
+                      disabled={!shareUrl}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      label={copied ? 'Copied' : 'Copy'}
+                      onPress={() => void handleCopyLink()}
+                      variant="secondary"
+                      icon={copied ? 'checkmark' : 'copy'}
+                      fullWidth
+                      disabled={!shareUrl}
+                    />
+                  </View>
+                </View>
               </View>
+            </Card>
+
+            <Divider label="or" />
+
+            {/* Invite by phone */}
+            <Card variant="outlined">
+              <View style={{ gap: theme.spacing.lg }}>
+                <Text variant="h3">Add by phone number</Text>
+
+                <Input
+                  label="Full name"
+                  value={name}
+                  onChangeText={setName}
+                  icon="person-outline"
+                  helper="Optional"
+                />
+
+                <Input
+                  label="Phone number"
+                  value={phone}
+                  onChangeText={setPhone}
+                  icon="call-outline"
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                />
+
+                <Input
+                  label={`Position (1-${group?.memberCount ?? 0})`}
+                  value={position}
+                  onChangeText={setPosition}
+                  icon="list-outline"
+                  keyboardType="numeric"
+                />
+
+                {availablePositions.length > 0 ? (
+                  <View style={{ gap: theme.spacing.sm }}>
+                    <Text variant="captionSmall" tone="secondary">
+                      Available positions
+                    </Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={{ gap: theme.spacing.sm }}
+                    >
+                      {availablePositions.slice(0, 12).map(value => (
+                        <Chip
+                          key={value}
+                          label={`#${value}`}
+                          selected={position === String(value)}
+                          onPress={() => setPosition(String(value))}
+                          accessibilityLabel={`Choose position ${value}`}
+                        />
+                      ))}
+                      {availablePositions.length > 12 ? (
+                        <Chip label="…" tone="neutral" />
+                      ) : null}
+                    </ScrollView>
+                  </View>
+                ) : (
+                  <Text variant="bodySmall" tone="warning">
+                    Every position is taken or pending.
+                  </Text>
+                )}
+
+                <Button
+                  label="Invite member"
+                  onPress={() => void handleInviteByPhone()}
+                  loading={adding}
+                  disabled={adding || !phone || !position}
+                  icon="person-add"
+                  fullWidth
+                />
+              </View>
+            </Card>
+          </Animated.View>
+        ) : (
+          <Animated.View entering={FadeIn.duration(220)} style={{ gap: theme.spacing.md }}>
+            {pendingInvites.length === 0 ? (
+              <EmptyState
+                title="No pending invites"
+                message="Invites you send by phone will appear here until they're accepted."
+                illustration="none"
+                icon="mail-outline"
+              />
+            ) : (
+              pendingInvites.map((invite, index) => (
+                <Animated.View
+                  key={invite.id}
+                  entering={FadeInDown.delay(staggerDelay(index)).duration(320)}
+                >
+                  <Card variant="outlined" padding="md">
+                    <View style={{ gap: theme.spacing.md }}>
+                      <View style={[styles.pendingRow, { gap: theme.spacing.md }]}>
+                        <Avatar name={invite.name || invite.phone} size="md" />
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text variant="h4" numberOfLines={1}>
+                            {invite.name || formatPhone(invite.phone)}
+                          </Text>
+                          <Text variant="mono" tone="tertiary">
+                            {formatPhone(invite.phone)}
+                          </Text>
+                        </View>
+                        <IconButton
+                          icon="close-circle"
+                          onPress={() => setCancelTarget(invite)}
+                          accessibilityLabel={`Cancel invite for ${invite.name || invite.phone}`}
+                          size="sm"
+                          color={theme.colors.error}
+                        />
+                      </View>
+
+                      <Divider />
+
+                      <View style={[styles.pendingRow, { gap: theme.spacing.sm }]}>
+                        <Badge label={`#${invite.position}`} tone="brand" size="sm" />
+                        <Badge label={invite.inviteCode} tone="neutral" size="sm" icon="key" />
+                        <View style={{ flex: 1 }} />
+                        <Text variant="captionSmall" tone="tertiary">
+                          Expires {new Date(invite.expiresAt).toLocaleDateString()}
+                        </Text>
+                      </View>
+                    </View>
+                  </Card>
+                </Animated.View>
+              ))
             )}
-          </View>
-        ))}
-      </View>
+          </Animated.View>
+        )}
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+        {/* Current members */}
+        <View style={{ gap: theme.spacing.md }}>
+          <View style={styles.sectionHeader}>
+            <Text variant="h2">Current members</Text>
+            <Badge label={String(currentMemberCount)} tone="neutral" size="sm" />
+          </View>
+
+          {members.map(member => {
+            const memberName = [member.user?.firstName, member.user?.lastName]
+              .filter(Boolean)
+              .join(' ');
+
+            return (
+              <Card key={member.id} variant="filled" padding="md">
+                <View style={[styles.pendingRow, { gap: theme.spacing.md }]}>
+                  <Avatar name={memberName} size="sm" />
+                  <Text variant="bodyMedium" style={{ flex: 1 }} numberOfLines={1}>
+                    {memberName || 'Member'}
+                  </Text>
+                  {member.position === 1 ? (
+                    <Badge label="Admin" tone="warning" size="sm" icon="star" />
+                  ) : null}
+                  <Badge label={`#${member.position}`} tone="neutral" size="sm" />
+                </View>
+              </Card>
+            );
+          })}
+        </View>
+      </KeyboardAwareScrollView>
+
+      <ConfirmSheet
+        visible={cancelTarget !== null}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={() => void handleCancelInvite()}
+        title="Cancel this invite?"
+        message={`${
+          cancelTarget?.name || (cancelTarget ? formatPhone(cancelTarget.phone) : 'This person')
+        } will no longer be able to join with code ${cancelTarget?.inviteCode ?? ''}.`}
+        confirmLabel="Cancel invite"
+        cancelLabel="Keep it"
+        destructive
+        loading={cancelling}
+      />
+    </Screen>
   );
 }
 
-// ... styles (comprehensive)
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB', padding: 16 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  groupInfo: { backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, marginBottom: 16 },
-  groupName: { fontSize: 22, fontWeight: '700' },
-  progressText: { fontSize: 14, color: '#6B7280', marginTop: 4 },
-  progressBar: { height: 8, backgroundColor: '#F3F4F6', borderRadius: 4, marginTop: 12 },
-  progressFill: { height: '100%', backgroundColor: '#2563EB', borderRadius: 4 },
-  tabBar: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 12, padding: 4, marginBottom: 16 },
-  tab: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  tabActive: { backgroundColor: '#2563EB' },
-  tabText: { fontSize: 14, fontWeight: '500', color: '#6B7280' },
-  tabTextActive: { color: '#FFFFFF' },
-  section: { marginBottom: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12 },
-  shareCard: { backgroundColor: '#EFF6FF', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE' },
-  shareDescription: { fontSize: 14, color: '#4B5563', marginBottom: 12 },
-  shareUrlContainer: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 8, marginBottom: 12 },
-  shareUrl: { fontSize: 13, color: '#2563EB' },
-  shareButtons: { flexDirection: 'row', gap: 10 },
-  shareButton: { flex: 1, flexDirection: 'row', backgroundColor: '#2563EB', padding: 12, borderRadius: 8, justifyContent: 'center', alignItems: 'center', gap: 6 },
-  shareButtonText: { color: '#FFFFFF', fontWeight: '600' },
-  copyButton: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8, justifyContent: 'center', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: '#2563EB' },
-  copyButtonText: { color: '#2563EB', fontWeight: '600' },
-  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, gap: 12 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
-  dividerText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
-  formCard: { backgroundColor: '#FFFFFF', padding: 16, borderRadius: 12 },
-  inputGroup: { marginBottom: 14 },
-  label: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 6 },
-  input: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, padding: 12, fontSize: 16 },
-  hint: { fontSize: 12, color: '#6B7280', marginTop: 4 },
-  addButton: { flexDirection: 'row', backgroundColor: '#2563EB', padding: 14, borderRadius: 10, justifyContent: 'center', alignItems: 'center', gap: 8 },
-  buttonDisabled: { opacity: 0.5 },
-  addButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
-  pendingCard: { backgroundColor: '#FFFFFF', padding: 16, borderRadius: 12, marginBottom: 10 },
-  pendingHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  pendingInfo: { flex: 1 },
-  pendingName: { fontSize: 16, fontWeight: '600' },
-  pendingPhone: { fontSize: 14, color: '#6B7280', marginTop: 2 },
-  pendingPosition: { fontSize: 14, color: '#2563EB', fontWeight: '500', marginTop: 4 },
-  cancelButton: { padding: 4 },
-  pendingFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  pendingCode: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  pendingExpiry: { fontSize: 12, color: '#9CA3AF' },
-  emptyState: { alignItems: 'center', padding: 30 },
-  emptyText: { color: '#6B7280', marginTop: 8 },
-  memberRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8, marginBottom: 6, gap: 10 },
-  memberPosition: { fontSize: 14, fontWeight: '600', color: '#2563EB', width: 30 },
-  memberName: { fontSize: 15, flex: 1 },
-  adminBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
-  adminBadgeText: { fontSize: 10, fontWeight: '700', color: '#D97706' },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  urlBox: { width: '100%' },
+  qrWrapper: { alignItems: 'center', alignSelf: 'center' },
+  buttonRow: { flexDirection: 'row' },
+  pendingRow: { flexDirection: 'row', alignItems: 'center' },
 });

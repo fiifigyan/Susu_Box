@@ -1,22 +1,54 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, ActivityIndicator,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { groupService } from '../../services/groupService';
-import { contributionService } from '../../services/contributionService';
-import { ProgressCircle } from '../../components/susu/ProgressCircle';
-import { MemberRow } from '../../components/susu/MemberRow';
-import { formatCurrency } from '../../utils/formatters';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { groupService, type Group } from '../../services/groupService';
+import { contributionService, type TodayStatus } from '../../services/contributionService';
+import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../hooks/useTheme';
+import { useToast } from '../../hooks/useToast';
+import { useHaptics } from '../../hooks/useHaptics';
+import {
+  Screen,
+  Text,
+  Card,
+  Button,
+  Chip,
+  Badge,
+  Divider,
+  Avatar,
+  Skeleton,
+  SkeletonList,
+  EmptyState,
+  BottomSheet,
+  Confetti,
+  ScreenHeader,
+} from '../../components/ui';
+import { MemberRow, PayoutBanner, ProgressCircle } from '../../components/susu';
+import { formatCurrency, formatPhone } from '../../utils/formatters';
 
-export function TodayScreen({ navigation }: any) {
+interface PendingMember {
+  id: string;
+  name: string;
+  phone: string | null;
+  position: number;
+}
+
+export function TodayScreen() {
+  const { user } = useAuth();
+  const theme = useTheme();
+  const toast = useToast();
+  const haptics = useHaptics();
+
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [groups, setGroups] = useState<any[]>([]);
-  const [todayStatus, setTodayStatus] = useState<any>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [todayStatus, setTodayStatus] = useState<TodayStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [verifying, setVerifying] = useState<string | null>(null);
+  const [completing, setCompleting] = useState(false);
+  const [celebrating, setCelebrating] = useState(false);
+  const [detailMember, setDetailMember] = useState<PendingMember | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -34,12 +66,12 @@ export function TodayScreen({ navigation }: any) {
     try {
       const fetchedGroups = await groupService.list();
       setGroups(fetchedGroups);
-      const activeGroup = fetchedGroups.find((group: any) => group.status === 'ACTIVE');
+      const activeGroup = fetchedGroups.find((group: Group) => group.status === 'ACTIVE');
       if (activeGroup && !selectedGroupId) {
         setSelectedGroupId(activeGroup.id);
       }
     } catch (error) {
-      console.error('Failed to fetch groups:', error);
+      toast.fromError(error, 'Failed to load your groups.');
     } finally {
       setLoading(false);
     }
@@ -49,30 +81,61 @@ export function TodayScreen({ navigation }: any) {
     try {
       setTodayStatus(await contributionService.today(groupId));
     } catch (error) {
-      console.error('Failed to fetch today status:', error);
+      toast.fromError(error, 'Failed to load today’s status.');
     }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    haptics.light();
+    await fetchGroups();
+    if (selectedGroupId) await fetchTodayStatus(selectedGroupId);
+    setRefreshing(false);
   };
 
   const handleManualCheckIn = async (memberId: string) => {
     if (!selectedGroupId || !todayStatus) return;
+
+    // Without the group we have no contribution amount, and sending an
+    // undefined amount would record a malformed contribution.
+    const group = groups.find(g => g.id === selectedGroupId);
+    if (!group) {
+      toast.error('Group details are still loading', { description: 'Try again in a moment.' });
+      return;
+    }
+
     try {
-      const group = groups.find(g => g.id === selectedGroupId);
-      await contributionService.record(selectedGroupId, todayStatus.day, group?.dailyContribution);
+      await contributionService.record(selectedGroupId, todayStatus.day, group.dailyContribution);
+      haptics.success();
+      toast.success('Payment recorded', { silent: true });
       fetchTodayStatus(selectedGroupId);
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to record payment');
+    } catch (error) {
+      toast.fromError(error, 'Failed to record payment');
     }
   };
 
   const handleAutoVerify = async (memberId: string) => {
     if (!selectedGroupId || !todayStatus) return;
+
+    const group = groups.find(g => g.id === selectedGroupId);
+    if (!group) {
+      toast.error('Group details are still loading', { description: 'Try again in a moment.' });
+      return;
+    }
+
     setVerifying(memberId);
     try {
-      const group = groups.find(g => g.id === selectedGroupId);
-      await contributionService.verify(selectedGroupId, todayStatus.day, group?.dailyContribution, `MOMO-${Date.now()}`);
+      await contributionService.verify(
+        selectedGroupId,
+        todayStatus.day,
+        group.dailyContribution,
+        `MOMO-${Date.now()}`
+      );
+      haptics.success();
+      toast.success('Payment verified', { silent: true });
       fetchTodayStatus(selectedGroupId);
-    } catch (error: any) {
-      Alert.alert('Verification Failed', error.message);
+    } catch (error) {
+      toast.fromError(error, 'Verification failed');
     } finally {
       setVerifying(null);
     }
@@ -80,150 +143,273 @@ export function TodayScreen({ navigation }: any) {
 
   const handleCompletePayout = async () => {
     if (!selectedGroupId || !todayStatus?.allPaid) return;
+    setCompleting(true);
     try {
       await contributionService.completePayout(selectedGroupId, todayStatus.day);
-      Alert.alert('Success', 'Payout completed! Moving to next day.');
+      // Celebrate before refetching, so the burst is not cut short by a re-render.
+      setCelebrating(true);
+      haptics.celebrate();
+      toast.success('Payout completed', { description: 'Moving to the next day.', silent: true });
       fetchTodayStatus(selectedGroupId);
-    } catch (error: any) {
-      Alert.alert('Error', error.message);
+      setTimeout(() => setCelebrating(false), 3200);
+    } catch (error) {
+      toast.fromError(error, 'Failed to complete the payout');
+    } finally {
+      setCompleting(false);
     }
   };
 
   const activeGroup = groups.find(g => g.id === selectedGroupId && g.status === 'ACTIVE');
+  const activeGroups = groups.filter(g => g.status === 'ACTIVE');
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563EB" />
-      </View>
+      <Screen padded>
+        <ScreenHeader title="Today" />
+        <View style={{ gap: theme.spacing.xl }}>
+          <Skeleton height={44} radius="full" />
+          <View style={styles.centered}>
+            <Skeleton width={150} height={150} radius="full" />
+          </View>
+          <Skeleton height={180} radius="2xl" />
+          <SkeletonList count={2} />
+        </View>
+      </Screen>
     );
   }
 
   if (!activeGroup) {
     return (
-      <View style={styles.emptyContainer}>
-        <Ionicons name="today-outline" size={64} color="#D1D5DB" />
-        <Text style={styles.emptyTitle}>No Active Group</Text>
-        <Text style={styles.emptySubtitle}>
-          Join or create a Susu group to start daily check-ins
-        </Text>
-      </View>
+      <Screen padded>
+        <ScreenHeader title="Today" />
+        <EmptyState
+          title="No active group"
+          message="Join or create a Susu group to start daily check-ins with your members."
+        />
+      </Screen>
     );
   }
 
-  const progress = todayStatus
-    ? (todayStatus.paidCount / todayStatus.totalMembers) * 100
-    : 0;
+  const paidCount = todayStatus?.paidCount ?? 0;
+  const totalMembers = todayStatus?.totalMembers ?? 0;
+  const progress = totalMembers > 0 ? (paidCount / totalMembers) * 100 : 0;
+  const pendingMembers = (todayStatus?.pendingMembers ?? []) as PendingMember[];
+  const recipient = todayStatus?.todayRecipient ?? null;
+  // Match on phone as well as name: the API returns a display name, not an id
+  // that can be compared with the signed-in user's.
+  const isMyPayout = Boolean(
+    recipient &&
+      user &&
+      (recipient.phone === user.phone ||
+        recipient.name.trim().toLowerCase() ===
+          `${user.firstName} ${user.lastName}`.trim().toLowerCase())
+  );
+  const useAutoVerify = activeGroup.verificationMethod === 'AUTO_VERIFY';
 
   return (
-    <ScrollView style={styles.container}>
-      {/* Group Selector */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.groupSelector}>
-        {groups.filter(g => g.status === 'ACTIVE').map((group) => (
-          <TouchableOpacity
-            key={group.id}
-            style={[styles.groupChip, selectedGroupId === group.id && styles.groupChipActive]}
-            onPress={() => setSelectedGroupId(group.id)}
+    <Screen>
+      {celebrating ? <Confetti active /> : null}
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{
+          paddingHorizontal: theme.screenPadding,
+          paddingBottom: theme.spacing['5xl'],
+          gap: theme.spacing.xl,
+        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void handleRefresh()}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+      >
+        <ScreenHeader
+          title="Today"
+          subtitle={`Day ${activeGroup.currentDay} of ${activeGroup.totalDays}`}
+        />
+
+        {/* Group selector */}
+        {activeGroups.length > 1 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: theme.spacing.sm }}
           >
-            <Text style={[styles.groupChipText, selectedGroupId === group.id && styles.groupChipTextActive]}>
-              {group.name}
+            {activeGroups.map(group => (
+              <Chip
+                key={group.id}
+                label={group.name}
+                selected={selectedGroupId === group.id}
+                onPress={() => setSelectedGroupId(group.id)}
+                accessibilityLabel={`Show ${group.name}`}
+              />
+            ))}
+          </ScrollView>
+        ) : null}
+
+        {/* Progress */}
+        <Animated.View entering={FadeInDown.duration(400)} style={styles.centered}>
+          <ProgressCircle
+            progress={progress}
+            size={168}
+            strokeWidth={14}
+            colorCoded
+            label={`${paidCount}/${totalMembers} paid`}
+            accessibilityLabel={`${paidCount} of ${totalMembers} members have paid`}
+          />
+        </Animated.View>
+
+        {/* Today's recipient */}
+        {recipient ? (
+          <PayoutBanner
+            recipientName={recipient.name}
+            recipientPhone={recipient.phone}
+            payoutAmount={activeGroup.dailyPayout}
+            contributionAmount={activeGroup.dailyContribution}
+            isCurrentUser={isMyPayout}
+            position={recipient.position}
+          />
+        ) : null}
+
+        {/* Held back notice */}
+        {todayStatus && todayStatus.heldBackAmount > 0 ? (
+          <Card variant="filled" padding="md">
+            <View style={[styles.row, { gap: theme.spacing.md }]}>
+              <Badge label="Held back" tone="warning" size="sm" icon="lock-closed" />
+              <Text variant="bodySmall" tone="secondary" style={{ flex: 1 }}>
+                {formatCurrency(todayStatus.heldBackAmount)} is held until the group's hold-back
+                window closes.
+              </Text>
+            </View>
+          </Card>
+        ) : null}
+
+        {/* Members */}
+        <View style={{ gap: theme.spacing.md }}>
+          <View style={styles.sectionHeader}>
+            <Text variant="h2">Members</Text>
+            {paidCount > 0 ? (
+              <Badge label={`${paidCount} paid`} tone="success" size="sm" icon="checkmark-circle" />
+            ) : null}
+          </View>
+
+          {pendingMembers.length === 0 ? (
+            <Card variant="filled" padding="md">
+              <View style={[styles.row, { gap: theme.spacing.md }]}>
+                <Badge label="All paid" tone="success" size="md" icon="checkmark-done" />
+                <Text variant="bodySmall" tone="secondary" style={{ flex: 1 }}>
+                  Everyone has contributed for day {todayStatus?.day ?? activeGroup.currentDay}.
+                </Text>
+              </View>
+            </Card>
+          ) : (
+            pendingMembers.map((member, index) => (
+              <MemberRow
+                key={member.id}
+                name={member.name}
+                phone={member.phone ?? ''}
+                status={todayStatus?.atRiskMemberIds.includes(member.id) ? 'MISSED' : 'PENDING'}
+                position={member.position}
+                index={index}
+                onCheckIn={() => handleManualCheckIn(member.id)}
+                onVerify={() => handleAutoVerify(member.id)}
+                isVerifying={verifying === member.id}
+                showAutoVerify={useAutoVerify}
+                onLongPress={() => setDetailMember(member)}
+              />
+            ))
+          )}
+
+          {pendingMembers.length > 0 ? (
+            <Text variant="captionSmall" tone="tertiary" align="center">
+              Swipe a row right to check in
+              {useAutoVerify ? ', left to verify' : ''} · long press for details
             </Text>
-          </TouchableOpacity>
-        ))}
+          ) : null}
+        </View>
+
+        {/* Complete payout */}
+        {todayStatus?.allPaid ? (
+          <Animated.View entering={FadeInDown.duration(420)}>
+            <Button
+              label={`Complete payout · ${formatCurrency(activeGroup.dailyPayout)}`}
+              onPress={() => void handleCompletePayout()}
+              loading={completing}
+              icon="checkmark-circle"
+              size="lg"
+              fullWidth
+              accessibilityHint="Distributes today's payout and advances the group to the next day"
+            />
+          </Animated.View>
+        ) : null}
       </ScrollView>
 
-      {/* Progress */}
-      <View style={styles.progressSection}>
-        <ProgressCircle progress={progress} size={120} strokeWidth={10} color="#10B981" />
-        <Text style={styles.progressText}>
-          {todayStatus?.paidCount || 0}/{todayStatus?.totalMembers || 0} paid
-        </Text>
-        <Text style={styles.dayText}>
-          Day {activeGroup.currentDay} of {activeGroup.totalDays}
-        </Text>
-      </View>
+      {/* Member detail */}
+      <BottomSheet
+        visible={detailMember !== null}
+        onClose={() => setDetailMember(null)}
+        title={detailMember?.name}
+        subtitle={`Position #${detailMember?.position ?? ''}`}
+      >
+        {detailMember ? (
+          <View style={{ gap: theme.spacing.lg }}>
+            <View style={[styles.row, { gap: theme.spacing.lg }]}>
+              <Avatar name={detailMember.name} size="xl" />
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="caption" tone="secondary">
+                  Mobile money
+                </Text>
+                <Text variant="mono">
+                  {detailMember.phone ? formatPhone(detailMember.phone) : 'Not provided'}
+                </Text>
+              </View>
+            </View>
 
-      {/* Today's Recipient */}
-      {todayStatus?.todayRecipient && (
-        <View style={styles.recipientCard}>
-          <Text style={styles.recipientLabel}>🎯 Today's Payout</Text>
-          <Text style={styles.recipientName}>{todayStatus.todayRecipient.name}</Text>
-          <Text style={styles.recipientAmount}>
-            {formatCurrency(activeGroup.dailyPayout)}
-          </Text>
-          <Text style={styles.recipientInstruction}>
-            Send {formatCurrency(activeGroup.dailyContribution)} to:
-          </Text>
-          <Text style={styles.recipientPhone}>
-            {todayStatus.todayRecipient.phone}
-          </Text>
-        </View>
-      )}
+            <Divider />
 
-      {/* Member List */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Members</Text>
-        {todayStatus?.pendingMembers?.map((member: any) => (
-          <MemberRow
-            key={member.id}
-            name={member.name}
-            phone={member.phone}
-            status="PENDING"
-            position={member.position}
-            onCheckIn={() => handleManualCheckIn(member.id)}
-            onVerify={() => handleAutoVerify(member.id)}
-            isVerifying={verifying === member.id}
-          />
-        ))}
-        {todayStatus?.paidCount > 0 && (
-          <Text style={styles.paidCount}>
-            ✅ {todayStatus.paidCount} members have paid
-          </Text>
-        )}
-      </View>
+            <View style={styles.sectionHeader}>
+              <Text variant="bodySmall" tone="secondary">
+                Owed today
+              </Text>
+              <Text variant="h4">{formatCurrency(activeGroup.dailyContribution)}</Text>
+            </View>
 
-      {/* Complete Payout */}
-      {todayStatus?.allPaid && (
-        <TouchableOpacity style={styles.completeButton} onPress={handleCompletePayout}>
-          <Ionicons name="checkmark-circle" size={24} color="#FFFFFF" />
-          <Text style={styles.completeButtonText}>
-            Complete Payout - {formatCurrency(activeGroup.dailyPayout)}
-          </Text>
-        </TouchableOpacity>
-      )}
+            <Button
+              label="Mark as paid"
+              onPress={() => {
+                const member = detailMember;
+                setDetailMember(null);
+                void handleManualCheckIn(member.id);
+              }}
+              icon="checkmark"
+              fullWidth
+            />
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+            {useAutoVerify ? (
+              <Button
+                label="Verify via mobile money"
+                onPress={() => {
+                  const member = detailMember;
+                  setDetailMember(null);
+                  void handleAutoVerify(member.id);
+                }}
+                variant="secondary"
+                icon="shield-checkmark"
+                fullWidth
+              />
+            ) : null}
+          </View>
+        ) : null}
+      </BottomSheet>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
-  emptyTitle: { fontSize: 20, fontWeight: '600', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8 },
-  groupSelector: { paddingHorizontal: 16, paddingVertical: 12 },
-  groupChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#F3F4F6', marginRight: 8 },
-  groupChipActive: { backgroundColor: '#2563EB' },
-  groupChipText: { fontSize: 14, fontWeight: '500', color: '#4B5563' },
-  groupChipTextActive: { color: '#FFFFFF' },
-  progressSection: { alignItems: 'center', paddingVertical: 20 },
-  progressText: { fontSize: 18, fontWeight: '600', marginTop: 12 },
-  dayText: { fontSize: 14, color: '#6B7280', marginTop: 4 },
-  recipientCard: { backgroundColor: '#FFFFFF', marginHorizontal: 16, padding: 20, borderRadius: 16, alignItems: 'center' },
-  recipientLabel: { fontSize: 14, color: '#6B7280', marginBottom: 4 },
-  recipientName: { fontSize: 24, fontWeight: '700' },
-  recipientAmount: { fontSize: 32, fontWeight: '800', color: '#10B981', marginTop: 4 },
-  recipientInstruction: { fontSize: 14, color: '#6B7280', marginTop: 16 },
-  recipientPhone: { fontSize: 18, fontWeight: '600', color: '#2563EB', marginTop: 4 },
-  section: { marginTop: 20, paddingHorizontal: 16 },
-  sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12 },
-  paidCount: { textAlign: 'center', color: '#10B981', marginTop: 12, fontWeight: '500' },
-  completeButton: {
-    backgroundColor: '#10B981', marginHorizontal: 16, marginTop: 20,
-    padding: 16, borderRadius: 12, flexDirection: 'row',
-    justifyContent: 'center', alignItems: 'center', gap: 8,
-  },
-  completeButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
+  centered: { alignItems: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center' },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 });

@@ -1,100 +1,184 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { Text } from '../ui/Text';
+import { Card } from '../ui/Card';
+import { Badge, type BadgeTone } from '../ui/Badge';
+import { ProgressBar } from '../ui/ProgressBar';
+import { AvatarStack } from '../ui/Avatar';
+import { useTheme } from '../../hooks/useTheme';
+import { staggerDelay, type Gradient } from '../../theme';
+import { formatCurrency } from '../../utils/formatters';
+import type { Group } from '../../services/groupService';
 
-interface GroupCardProps {
-  group: any;
-  onPress: () => void;
-  compact?: boolean;
+/** `myPosition` is attached by the API alongside the group payload. */
+export interface GroupCardGroup extends Group {
+  myPosition?: number;
 }
 
-export function GroupCard({ group, onPress, compact = false }: GroupCardProps) {
-  const progressPercent = group.totalDays > 0
-    ? (group.currentDay / group.totalDays) * 100
-    : 0;
+export interface GroupCardProps {
+  group: GroupCardGroup;
+  onPress: () => void;
+  /** Hides the progress bar and stats, for dense lists. */
+  compact?: boolean;
+  /** Position in the list, used to stagger the entrance animation. */
+  index?: number;
+}
+
+type GroupStatus = 'FORMING' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+
+function statusOf(status: string): GroupStatus {
+  if (status === 'ACTIVE' || status === 'COMPLETED' || status === 'CANCELLED') return status;
+  return 'FORMING';
+}
+
+export function GroupCard({ group, onPress, compact = false, index }: GroupCardProps) {
+  const theme = useTheme();
+  const status = statusOf(group.status);
+
+  const totalDays = typeof group.totalDays === 'number' ? group.totalDays : 0;
+  const currentDay = typeof group.currentDay === 'number' ? group.currentDay : 0;
+  const progress = totalDays > 0 ? currentDay / totalDays : 0;
+
+  const presentation: Record<
+    GroupStatus,
+    { tone: BadgeTone; label: string; icon: keyof typeof Ionicons.glyphMap; gradient: Gradient }
+  > = {
+    FORMING: {
+      tone: 'warning',
+      label: 'Forming',
+      icon: 'person-add',
+      gradient: theme.colors.gradientGold,
+    },
+    ACTIVE: {
+      tone: 'success',
+      label: 'Active',
+      icon: 'people',
+      gradient: theme.colors.gradientPrimary,
+    },
+    COMPLETED: {
+      tone: 'info',
+      label: 'Completed',
+      icon: 'checkmark-done',
+      gradient: theme.colors.gradientSuccess,
+    },
+    CANCELLED: {
+      tone: 'error',
+      label: 'Cancelled',
+      icon: 'close-circle',
+      gradient: theme.colors.gradientNeutral,
+    },
+  };
+
+  const { tone, label, icon, gradient } = presentation[status];
+
+  const memberNames = (group.members ?? [])
+    .map(member =>
+      [member.user?.firstName, member.user?.lastName].filter(Boolean).join(' ').trim()
+    )
+    .filter(name => name.length > 0);
+
+  const body = (
+    <Card
+      variant="elevated"
+      padding="none"
+      onPress={onPress}
+      accessibilityLabel={`${group.name}, ${label}, day ${currentDay} of ${totalDays}`}
+      accessibilityHint="Opens the group details"
+    >
+      {/* Gradient band, tinted by status, so state is legible before reading */}
+      <LinearGradient
+        colors={gradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.band}
+      />
+
+      <View style={{ padding: theme.spacing.xl, gap: theme.spacing.lg }}>
+        <View style={[styles.header, { gap: theme.spacing.md }]}>
+          <View
+            style={[
+              styles.iconTile,
+              { backgroundColor: theme.colors.primarySubtle, borderRadius: theme.radius.md },
+            ]}
+          >
+            <Ionicons name={icon} size={20} color={theme.colors.primary} />
+          </View>
+
+          <View style={styles.titles}>
+            <Text variant="h3" numberOfLines={1}>
+              {group.name}
+            </Text>
+            <Text variant="bodySmall" tone="secondary" numberOfLines={1}>
+              {group.myPosition ? `Your position #${group.myPosition}` : `${group.memberCount} members`}
+            </Text>
+          </View>
+
+          <Badge label={label} tone={tone} size="sm" dot />
+        </View>
+
+        {compact ? null : (
+          <>
+            <View style={{ gap: theme.spacing.sm }}>
+              <ProgressBar
+                progress={progress}
+                gradient={gradient}
+                accessibilityLabel={`Day ${currentDay} of ${totalDays}`}
+              />
+              <View style={styles.progressMeta}>
+                <Text variant="caption" tone="secondary">
+                  Day {currentDay} of {totalDays}
+                </Text>
+                <Text variant="caption" tone="brand">
+                  {Math.round(progress * 100)}%
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.footer, { gap: theme.spacing.md }]}>
+              {memberNames.length > 0 ? (
+                <AvatarStack names={memberNames} size="sm" max={4} />
+              ) : (
+                <Badge label={`${group.memberCount} members`} tone="neutral" size="sm" icon="people" />
+              )}
+
+              <View style={[styles.amounts, { gap: theme.spacing.sm }]}>
+                <Badge
+                  label={`${formatCurrency(group.dailyContribution)}/day`}
+                  tone="neutral"
+                  size="sm"
+                />
+                <Badge label={formatCurrency(group.dailyPayout)} tone="brand" size="sm" icon="arrow-up" />
+              </View>
+            </View>
+          </>
+        )}
+      </View>
+    </Card>
+  );
+
+  if (index === undefined) return body;
 
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress}>
-      <View style={styles.header}>
-        <View style={styles.nameSection}>
-          <Ionicons
-            name={group.status === 'ACTIVE' ? 'people' : 'checkmark-done'}
-            size={20}
-            color={group.status === 'ACTIVE' ? '#10B981' : '#6B7280'}
-          />
-          <Text style={styles.name}>{group.name}</Text>
-        </View>
-        <View style={[
-          styles.statusBadge,
-          group.status === 'ACTIVE' ? styles.activeBadge : styles.completedBadge,
-        ]}>
-          <Text style={[
-            styles.statusText,
-            group.status === 'ACTIVE' ? styles.activeText : styles.completedText,
-          ]}>
-            {group.status}
-          </Text>
-        </View>
-      </View>
-
-      {!compact && (
-        <>
-          <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
-          </View>
-          <Text style={styles.progressLabel}>
-            Day {group.currentDay} of {group.totalDays} ({Math.round(progressPercent)}%)
-          </Text>
-
-          <View style={styles.details}>
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Daily Pay</Text>
-              <Text style={styles.detailValue}>GHS {group.dailyContribution}</Text>
-            </View>
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Payout</Text>
-              <Text style={styles.detailValue}>GHS {group.dailyPayout}</Text>
-            </View>
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Members</Text>
-              <Text style={styles.detailValue}>{group.memberCount}</Text>
-            </View>
-          </View>
-        </>
-      )}
-
-      <View style={styles.footer}>
-        <Text style={styles.myPosition}>
-          Position: #{group.myPosition || '—'}
-        </Text>
-        <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
-      </View>
-    </TouchableOpacity>
+    <Animated.View entering={FadeInDown.delay(staggerDelay(index)).duration(340)}>
+      {body}
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: '#FFFFFF', padding: 16, borderRadius: 16, marginBottom: 12,
-    elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 2,
+  band: { height: 5, width: '100%' },
+  header: { flexDirection: 'row', alignItems: 'center' },
+  iconTile: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  titles: { flex: 1, gap: 2 },
+  progressMeta: { flexDirection: 'row', justifyContent: 'space-between' },
+  footer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
   },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  nameSection: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  name: { fontSize: 16, fontWeight: '600' },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  activeBadge: { backgroundColor: '#DCFCE7' },
-  completedBadge: { backgroundColor: '#F3F4F6' },
-  statusText: { fontSize: 12, fontWeight: '600' },
-  activeText: { color: '#10B981' },
-  completedText: { color: '#6B7280' },
-  progressBar: { height: 6, backgroundColor: '#F3F4F6', borderRadius: 3, marginTop: 12 },
-  progressFill: { height: '100%', backgroundColor: '#2563EB', borderRadius: 3 },
-  progressLabel: { fontSize: 12, color: '#6B7280', marginTop: 4 },
-  details: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  detailItem: { alignItems: 'center' },
-  detailLabel: { fontSize: 12, color: '#9CA3AF' },
-  detailValue: { fontSize: 16, fontWeight: '600', marginTop: 2 },
-  footer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  myPosition: { fontSize: 14, color: '#2563EB', fontWeight: '500' },
+  amounts: { flexDirection: 'row', alignItems: 'center' },
 });

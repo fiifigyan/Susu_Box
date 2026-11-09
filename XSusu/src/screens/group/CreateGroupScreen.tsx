@@ -1,14 +1,53 @@
 import React, { useState } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
-  Alert, KeyboardAvoidingView, Platform, ActivityIndicator,
-} from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import Animated, {
+  FadeIn,
+  SlideInLeft,
+  SlideInRight,
+  SlideOutLeft,
+  SlideOutRight,
+} from 'react-native-reanimated';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../types/navigation';
 import { groupService } from '../../services/groupService';
+import { useTheme } from '../../hooks/useTheme';
+import { useToast } from '../../hooks/useToast';
+import { useHaptics } from '../../hooks/useHaptics';
+import {
+  Screen,
+  Text,
+  Card,
+  Input,
+  Button,
+  Badge,
+  Divider,
+  ProgressBar,
+  ScreenHeader,
+  Confetti,
+} from '../../components/ui';
+import { SuccessCheck } from '../../components/illustrations';
+import { formatCurrency } from '../../utils/formatters';
 
-export function CreateGroupScreen({ navigation }: any) {
+type Props = NativeStackScreenProps<RootStackParamList, 'CreateGroup'>;
+
+const TOTAL_STEPS = 3;
+
+const STEP_TITLES = ['Basic info', 'Money setup', 'Review'] as const;
+
+export function CreateGroupScreen({ navigation }: Props) {
+  const theme = useTheme();
+  const toast = useToast();
+  const haptics = useHaptics();
+
   const [step, setStep] = useState(1);
+  /** 1 when moving forward, -1 when going back. Drives the slide direction. */
+  const [direction, setDirection] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [createdGroupId, setCreatedGroupId] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | undefined>(undefined);
+
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -20,13 +59,17 @@ export function CreateGroupScreen({ navigation }: any) {
     appFeePerMember: '2',
   });
 
-  const dailyTotal = parseFloat(formData.dailyContribution || '0') * parseInt(formData.memberCount || '0');
+  const dailyTotal =
+    parseFloat(formData.dailyContribution || '0') * parseInt(formData.memberCount || '0');
   const dailySurplus = dailyTotal - parseFloat(formData.dailyPayout || '0');
-  const monthlyRevenue = parseFloat(formData.appFeePerMember || '0') * parseInt(formData.memberCount || '0');
+  const monthlyRevenue =
+    parseFloat(formData.appFeePerMember || '0') * parseInt(formData.memberCount || '0');
 
   const handleCreate = async () => {
     if (!formData.name.trim()) {
-      Alert.alert('Error', 'Please enter a group name');
+      setNameError('Please enter a group name');
+      setDirection(-1);
+      setStep(1);
       return;
     }
 
@@ -43,262 +86,423 @@ export function CreateGroupScreen({ navigation }: any) {
         appFeePerMember: parseFloat(formData.appFeePerMember),
       });
 
-      Alert.alert('Success', 'Group created!', [
-        { text: 'Invite Members', onPress: () => navigation.navigate('InviteMembers', { groupId: group.id }) },
-        { text: 'Done', onPress: () => navigation.goBack() },
-      ]);
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to create group');
+      // Replaces the old multi-button Alert with a success screen that offers
+      // the same two choices.
+      setCreatedGroupId(group.id);
+      haptics.celebrate();
+    } catch (error) {
+      toast.fromError(error, 'Failed to create group');
     } finally {
       setLoading(false);
     }
   };
 
-  const updateField = (field: string, value: string) => {
+  const updateField = (field: keyof typeof formData, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+    if (field === 'name' && nameError) setNameError(undefined);
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView style={styles.form}>
-        {/* Step Indicator */}
-        <View style={styles.stepIndicator}>
-          {[1, 2, 3].map((s) => (
-            <React.Fragment key={s}>
-              <View style={[styles.stepDot, step >= s && styles.stepDotActive]}>
-                <Text style={[styles.stepNumber, step >= s && styles.stepNumberActive]}>{s}</Text>
-              </View>
-              {s < 3 && <View style={[styles.stepLine, step > s && styles.stepLineActive]} />}
-            </React.Fragment>
-          ))}
-        </View>
-        <Text style={styles.stepLabel}>
-          {step === 1 ? 'Basic Info' : step === 2 ? 'Money Setup' : 'Review'}
-        </Text>
+  const goNext = () => {
+    if (step === 1 && !formData.name.trim()) {
+      setNameError('Please enter a group name');
+      return;
+    }
+    setDirection(1);
+    setStep(current => current + 1);
+  };
 
-        {step === 1 && (
-          <>
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Group Name *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Family Susu 2026"
-                value={formData.name}
-                onChangeText={(text) => updateField('name', text)}
-              />
-            </View>
+  const goBack = () => {
+    setDirection(-1);
+    setStep(current => current - 1);
+  };
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="Describe your susu group..."
-                value={formData.description}
-                onChangeText={(text) => updateField('description', text)}
-                multiline
-                numberOfLines={3}
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Number of Members *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="35"
-                keyboardType="numeric"
-                value={formData.memberCount}
-                onChangeText={(text) => updateField('memberCount', text)}
-              />
-            </View>
-          </>
-        )}
-
-        {step === 2 && (
-          <>
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Daily Contribution (GHS) *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="21"
-                keyboardType="numeric"
-                value={formData.dailyContribution}
-                onChangeText={(text) => updateField('dailyContribution', text)}
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Daily Payout (GHS) *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="700"
-                keyboardType="numeric"
-                value={formData.dailyPayout}
-                onChangeText={(text) => updateField('dailyPayout', text)}
-              />
-            </View>
-
-            <View style={styles.calculationCard}>
-              <Text style={styles.calcTitle}>Daily Breakdown</Text>
-              <View style={styles.calcRow}>
-                <Text style={styles.calcLabel}>Total Collected</Text>
-                <Text style={styles.calcValue}>GHS {dailyTotal.toFixed(2)}</Text>
-              </View>
-              <View style={styles.calcRow}>
-                <Text style={styles.calcLabel}>Payout</Text>
-                <Text style={styles.calcValue}>- GHS {parseFloat(formData.dailyPayout || '0').toFixed(2)}</Text>
-              </View>
-              <View style={[styles.calcRow, styles.calcRowTotal]}>
-                <Text style={styles.calcLabelBold}>Daily Surplus</Text>
-                <Text style={styles.calcValueBold}>GHS {dailySurplus.toFixed(2)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Surplus Usage</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="e.g., App maintenance: GHS 10, Emergency fund: GHS 25"
-                value={formData.surplusUse}
-                onChangeText={(text) => updateField('surplusUse', text)}
-                multiline
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Verification Method</Text>
-              <View style={styles.radioGroup}>
-                {[
-                  { value: 'MANUAL' as const, label: 'Manual Check-in' },
-                  { value: 'AUTO_VERIFY' as const, label: 'Auto-Verify (MoMo API)' },
-                ].map((option) => (
-                  <TouchableOpacity
-                    key={option.value}
-                    style={[styles.radioOption, formData.verificationMethod === option.value && styles.radioOptionActive]}
-                    onPress={() => updateField('verificationMethod', option.value)}
-                  >
-                    <Ionicons
-                      name={formData.verificationMethod === option.value ? 'radio-button-on' : 'radio-button-off'}
-                      size={20}
-                      color={formData.verificationMethod === option.value ? '#2563EB' : '#9CA3AF'}
-                    />
-                    <Text style={styles.radioLabel}>{option.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Monthly App Fee per Member (GHS)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="2"
-                keyboardType="numeric"
-                value={formData.appFeePerMember}
-                onChangeText={(text) => updateField('appFeePerMember', text)}
-              />
-              <Text style={styles.hint}>
-                Monthly revenue: GHS {monthlyRevenue.toFixed(2)} ({formData.memberCount} members × GHS {formData.appFeePerMember})
-              </Text>
-            </View>
-          </>
-        )}
-
-        {step === 3 && (
-          <View style={styles.summaryCard}>
-            <Text style={styles.sectionTitle}>Review & Confirm</Text>
-            {[
-              ['Group Name', formData.name],
-              ['Members', formData.memberCount],
-              ['Daily Contribution', `GHS ${parseFloat(formData.dailyContribution || '0').toFixed(2)}`],
-              ['Daily Payout', `GHS ${parseFloat(formData.dailyPayout || '0').toFixed(2)}`],
-              ['Daily Surplus', `GHS ${dailySurplus.toFixed(2)}`],
-              ['Verification', formData.verificationMethod === 'AUTO_VERIFY' ? 'Auto-Verify' : 'Manual'],
-              ['Monthly Revenue', `GHS ${monthlyRevenue.toFixed(2)}`],
-            ].map(([label, value]) => (
-              <View key={label} style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>{label}</Text>
-                <Text style={styles.summaryValue}>{value}</Text>
-              </View>
-            ))}
+  if (createdGroupId) {
+    return (
+      <Screen background="gradient" edges={['top', 'bottom']} padded>
+        <Confetti active />
+        <View style={[styles.celebration, { gap: theme.spacing.xl }]}>
+          <SuccessCheck size={132} />
+          <View style={{ gap: theme.spacing.sm }}>
+            <Text variant="h1" align="center">
+              Group created
+            </Text>
+            <Text variant="body" tone="secondary" align="center">
+              {formData.name} is ready. Invite members to fill the {formData.memberCount}{' '}
+              positions.
+            </Text>
           </View>
-        )}
 
-        {/* Navigation */}
-        <View style={styles.buttonRow}>
-          {step > 1 && (
-            <TouchableOpacity style={styles.backButton} onPress={() => setStep(step - 1)}>
-              <Text style={styles.backButtonText}>Back</Text>
-            </TouchableOpacity>
-          )}
+          <View style={{ alignSelf: 'stretch', gap: theme.spacing.md }}>
+            <Button
+              label="Invite members"
+              onPress={() =>
+                navigation.navigate('InviteMembers', { groupId: createdGroupId })
+              }
+              icon="person-add"
+              size="lg"
+              fullWidth
+            />
+            <Button
+              label="Done"
+              onPress={() => navigation.goBack()}
+              variant="ghost"
+              fullWidth
+            />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
 
-          {step < 3 ? (
-            <TouchableOpacity style={styles.nextButton} onPress={() => setStep(step + 1)}>
-              <Text style={styles.nextButtonText}>Next</Text>
-            </TouchableOpacity>
+  return (
+    <Screen edges={['top', 'bottom']}>
+      <View style={{ paddingHorizontal: theme.screenPadding, gap: theme.spacing.md }}>
+        <ScreenHeader title="Create a group" showBack />
+
+        {/* Progress */}
+        <View style={{ gap: theme.spacing.sm }}>
+          <ProgressBar
+            progress={step / TOTAL_STEPS}
+            accessibilityLabel={`Step ${step} of ${TOTAL_STEPS}`}
+          />
+          <View style={styles.stepRow}>
+            <Text variant="caption" tone="secondary">
+              Step {step} of {TOTAL_STEPS}
+            </Text>
+            <Text variant="caption" tone="brand">
+              {STEP_TITLES[step - 1]}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <KeyboardAwareScrollView
+        contentContainerStyle={{
+          paddingHorizontal: theme.screenPadding,
+          paddingTop: theme.spacing.xl,
+          paddingBottom: theme.spacing['3xl'],
+        }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        bottomOffset={24}
+      >
+        <Animated.View
+          // Keyed on step so each pane mounts fresh and animates in.
+          key={step}
+          entering={direction > 0 ? SlideInRight.duration(260) : SlideInLeft.duration(260)}
+          exiting={direction > 0 ? SlideOutLeft.duration(200) : SlideOutRight.duration(200)}
+          style={{ gap: theme.spacing.lg }}
+        >
+          {step === 1 ? (
+            <>
+              <Input
+                label="Group name"
+                value={formData.name}
+                onChangeText={value => updateField('name', value)}
+                error={nameError}
+                icon="people-outline"
+                helper="e.g. Family Susu 2026"
+              />
+              <Input
+                label="Description"
+                value={formData.description}
+                onChangeText={value => updateField('description', value)}
+                icon="document-text-outline"
+                helper="Optional — what is this group for?"
+              />
+              <Input
+                label="Number of members"
+                value={formData.memberCount}
+                onChangeText={value => updateField('memberCount', value)}
+                icon="person-add-outline"
+                keyboardType="numeric"
+                helper="Each member gets one payout day"
+              />
+
+              <GroupPreview
+                name={formData.name}
+                memberCount={formData.memberCount}
+                dailyContribution={formData.dailyContribution}
+                dailyPayout={formData.dailyPayout}
+              />
+            </>
+          ) : null}
+
+          {step === 2 ? (
+            <>
+              <Input
+                label="Daily contribution (GHS)"
+                value={formData.dailyContribution}
+                onChangeText={value => updateField('dailyContribution', value)}
+                icon="cash-outline"
+                keyboardType="numeric"
+              />
+              <Input
+                label="Daily payout (GHS)"
+                value={formData.dailyPayout}
+                onChangeText={value => updateField('dailyPayout', value)}
+                icon="gift-outline"
+                keyboardType="numeric"
+              />
+
+              {/* Live surplus calculator */}
+              <Card variant="filled">
+                <View style={{ gap: theme.spacing.sm }}>
+                  <Text variant="h4">Daily breakdown</Text>
+                  <CalcRow label="Total collected" value={formatCurrency(dailyTotal)} />
+                  <CalcRow
+                    label="Payout"
+                    value={`− ${formatCurrency(parseFloat(formData.dailyPayout || '0'))}`}
+                  />
+                  <Divider spacing="sm" />
+                  <View style={styles.stepRow}>
+                    <Text variant="bodyMedium">Daily surplus</Text>
+                    <Text
+                      variant="h3"
+                      tone={dailySurplus < 0 ? 'error' : 'success'}
+                      tabular
+                    >
+                      {formatCurrency(dailySurplus)}
+                    </Text>
+                  </View>
+                  {dailySurplus < 0 ? (
+                    <Text variant="bodySmall" tone="error">
+                      The payout exceeds what the group collects each day. Lower the payout or
+                      raise the contribution.
+                    </Text>
+                  ) : null}
+                </View>
+              </Card>
+
+              <Input
+                label="Surplus usage"
+                value={formData.surplusUse}
+                onChangeText={value => updateField('surplusUse', value)}
+                icon="pie-chart-outline"
+              />
+
+              {/* Verification method */}
+              <View style={{ gap: theme.spacing.sm }}>
+                <Text variant="caption" tone="secondary">
+                  Verification method
+                </Text>
+                {(
+                  [
+                    {
+                      value: 'MANUAL' as const,
+                      label: 'Manual check-in',
+                      hint: 'An admin marks each contribution as paid',
+                    },
+                    {
+                      value: 'AUTO_VERIFY' as const,
+                      label: 'Auto-verify',
+                      hint: 'Confirm contributions against mobile money',
+                    },
+                  ]
+                ).map(option => {
+                  const selected = formData.verificationMethod === option.value;
+                  return (
+                    <Card
+                      key={option.value}
+                      variant="outlined"
+                      padding="md"
+                      onPress={() => updateField('verificationMethod', option.value)}
+                      accessibilityLabel={`${option.label}. ${option.hint}`}
+                      style={
+                        selected
+                          ? { borderColor: theme.colors.primary, borderWidth: 2 }
+                          : undefined
+                      }
+                    >
+                      <View style={[styles.optionRow, { gap: theme.spacing.md }]}>
+                        <Ionicons
+                          name={selected ? 'radio-button-on' : 'radio-button-off'}
+                          size={22}
+                          color={selected ? theme.colors.primary : theme.colors.textTertiary}
+                        />
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text variant="h4">{option.label}</Text>
+                          <Text variant="bodySmall" tone="secondary">
+                            {option.hint}
+                          </Text>
+                        </View>
+                      </View>
+                    </Card>
+                  );
+                })}
+              </View>
+
+              <Input
+                label="Monthly app fee per member (GHS)"
+                value={formData.appFeePerMember}
+                onChangeText={value => updateField('appFeePerMember', value)}
+                icon="wallet-outline"
+                keyboardType="numeric"
+                helper={`Monthly revenue: ${formatCurrency(monthlyRevenue)} (${
+                  formData.memberCount
+                } members × ${formatCurrency(parseFloat(formData.appFeePerMember || '0'))})`}
+              />
+            </>
+          ) : null}
+
+          {step === 3 ? (
+            <>
+              <GroupPreview
+                name={formData.name}
+                memberCount={formData.memberCount}
+                dailyContribution={formData.dailyContribution}
+                dailyPayout={formData.dailyPayout}
+              />
+
+              <Card variant="outlined">
+                <View style={{ gap: theme.spacing.xs }}>
+                  <Text variant="h3" style={{ marginBottom: theme.spacing.sm }}>
+                    Review &amp; confirm
+                  </Text>
+
+                  {(
+                    [
+                      ['Group name', formData.name || '—'],
+                      ['Members', formData.memberCount],
+                      [
+                        'Daily contribution',
+                        formatCurrency(parseFloat(formData.dailyContribution || '0')),
+                      ],
+                      ['Daily payout', formatCurrency(parseFloat(formData.dailyPayout || '0'))],
+                      ['Daily surplus', formatCurrency(dailySurplus)],
+                      [
+                        'Verification',
+                        formData.verificationMethod === 'AUTO_VERIFY'
+                          ? 'Auto-verify'
+                          : 'Manual',
+                      ],
+                      ['Monthly revenue', formatCurrency(monthlyRevenue)],
+                    ] as Array<[string, string]>
+                  ).map(([label, value]) => (
+                    <View key={label} style={[styles.summaryRow, { paddingVertical: theme.spacing.sm }]}>
+                      <Text variant="bodySmall" tone="secondary">
+                        {label}
+                      </Text>
+                      <Text variant="bodyMedium">{value}</Text>
+                    </View>
+                  ))}
+                </View>
+              </Card>
+            </>
+          ) : null}
+        </Animated.View>
+      </KeyboardAwareScrollView>
+
+      {/* Footer navigation */}
+      <View
+        style={[
+          styles.footer,
+          {
+            paddingHorizontal: theme.screenPadding,
+            paddingTop: theme.spacing.md,
+            paddingBottom: theme.spacing.lg,
+            gap: theme.spacing.md,
+            borderTopColor: theme.colors.border,
+            backgroundColor: theme.colors.background,
+          },
+        ]}
+      >
+        {step > 1 ? (
+          <View style={styles.backButton}>
+            <Button label="Back" onPress={goBack} variant="outline" fullWidth />
+          </View>
+        ) : null}
+
+        <View style={styles.primaryButton}>
+          {step < TOTAL_STEPS ? (
+            <Button
+              label="Next"
+              onPress={goNext}
+              icon="arrow-forward"
+              iconPosition="right"
+              fullWidth
+            />
           ) : (
-            <TouchableOpacity
-              style={[styles.createButton, loading && styles.buttonDisabled]}
-              onPress={handleCreate}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.createButtonText}>Create Group</Text>
-              )}
-            </TouchableOpacity>
+            <Button
+              label="Create group"
+              onPress={() => void handleCreate()}
+              loading={loading}
+              icon="checkmark"
+              fullWidth
+              accessibilityHint="Creates the group with these settings"
+            />
           )}
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </View>
+    </Screen>
+  );
+}
+
+/** Live preview of how the group will appear once created. */
+function GroupPreview({
+  name,
+  memberCount,
+  dailyContribution,
+  dailyPayout,
+}: {
+  name: string;
+  memberCount: string;
+  dailyContribution: string;
+  dailyPayout: string;
+}) {
+  const theme = useTheme();
+
+  return (
+    <Animated.View entering={FadeIn.duration(280)}>
+      <Card variant="gradient" gradient={theme.colors.gradientBalance}>
+        <View style={{ gap: theme.spacing.md }}>
+          <Text variant="overline" color={`${theme.colors.textInverse}B3`}>
+            Preview
+          </Text>
+          <Text variant="h2" color={theme.colors.textInverse} numberOfLines={1}>
+            {name || 'Your group name'}
+          </Text>
+          <View style={[styles.previewRow, { gap: theme.spacing.sm }]}>
+            <Badge label={`${memberCount || '0'} members`} tone="neutral" size="sm" solid />
+            <Badge
+              label={`${formatCurrency(parseFloat(dailyContribution || '0'))}/day`}
+              tone="neutral"
+              size="sm"
+              solid
+            />
+            <Badge
+              label={formatCurrency(parseFloat(dailyPayout || '0'))}
+              tone="success"
+              size="sm"
+              solid
+            />
+          </View>
+        </View>
+      </Card>
+    </Animated.View>
+  );
+}
+
+function CalcRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.stepRow}>
+      <Text variant="bodySmall" tone="secondary">
+        {label}
+      </Text>
+      <Text variant="bodyMedium" tabular>
+        {value}
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  form: { flex: 1, padding: 16 },
-  stepIndicator: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 4, paddingVertical: 16 },
-  stepDot: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center' },
-  stepDotActive: { backgroundColor: '#2563EB' },
-  stepNumber: { fontSize: 14, fontWeight: '600', color: '#9CA3AF' },
-  stepNumberActive: { color: '#FFFFFF' },
-  stepLine: { width: 40, height: 2, backgroundColor: '#E5E7EB' },
-  stepLineActive: { backgroundColor: '#2563EB' },
-  stepLabel: { textAlign: 'center', fontSize: 13, color: '#6B7280', marginBottom: 20 },
-  inputGroup: { marginBottom: 16 },
-  label: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 8 },
-  input: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, padding: 14, fontSize: 16 },
-  textArea: { minHeight: 80, textAlignVertical: 'top' },
-  hint: { fontSize: 12, color: '#6B7280', marginTop: 4 },
-  calculationCard: { backgroundColor: '#F0FDF4', padding: 16, borderRadius: 12, marginBottom: 16 },
-  calcTitle: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
-  calcRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  calcRowTotal: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#DCFCE7' },
-  calcLabel: { fontSize: 14, color: '#4B5563' },
-  calcValue: { fontSize: 14, fontWeight: '500' },
-  calcLabelBold: { fontSize: 15, fontWeight: '600' },
-  calcValueBold: { fontSize: 16, fontWeight: '700', color: '#10B981' },
-  radioGroup: { gap: 8 },
-  radioOption: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFFFFF',
-    padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB',
-  },
-  radioOptionActive: { borderColor: '#2563EB', backgroundColor: '#EFF6FF' },
-  radioLabel: { fontSize: 15 },
-  sectionTitle: { fontSize: 20, fontWeight: '700', marginBottom: 16 },
-  summaryCard: { backgroundColor: '#FFFFFF', padding: 16, borderRadius: 12, marginBottom: 16 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  summaryLabel: { fontSize: 14, color: '#6B7280' },
-  summaryValue: { fontSize: 14, fontWeight: '600' },
-  buttonRow: { flexDirection: 'row', gap: 12, marginTop: 24, paddingBottom: 40 },
-  backButton: { flex: 1, padding: 16, borderRadius: 12, backgroundColor: '#F3F4F6', alignItems: 'center' },
-  backButtonText: { fontSize: 16, fontWeight: '600', color: '#4B5563' },
-  nextButton: { flex: 2, padding: 16, borderRadius: 12, backgroundColor: '#2563EB', alignItems: 'center' },
-  nextButtonText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
-  createButton: { flex: 2, padding: 16, borderRadius: 12, backgroundColor: '#10B981', alignItems: 'center' },
-  buttonDisabled: { opacity: 0.5 },
-  createButtonText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  stepRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  optionRow: { flexDirection: 'row', alignItems: 'center' },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  previewRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' },
+  footer: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth },
+  backButton: { flex: 1 },
+  primaryButton: { flex: 2 },
+  celebration: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

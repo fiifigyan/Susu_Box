@@ -6,7 +6,10 @@ export const API_ENDPOINTS = {
   auth: { 
     login: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_LOGIN', '/auth/login'), 
     register: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_REGISTER', '/auth/register'), 
-    verifyOtp: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_VERIFY_OTP', '/auth/verify-otp'), 
+    verifyOtp: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_VERIFY_OTP', '/auth/verify-otp'),
+    resendOtp: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_RESEND_OTP', '/auth/resend-otp'), 
+    forgotPassword: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_FORGOT_PASSWORD', '/auth/forgot-password'),
+    resetPassword: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_RESET_PASSWORD', '/auth/reset-password'),
     refresh: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_REFRESH', '/auth/refresh-token'), 
     logout: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_LOGOUT', '/auth/logout'), 
     profile: fromEnv('EXPO_PUBLIC_ENDPOINT_AUTH_PROFILE', '/auth/profile') 
@@ -46,5 +49,8 @@ export const API_ENDPOINTS = {
   defaults: { 
     group: (id: string) => `${fromEnv('EXPO_PUBLIC_ENDPOINT_DEFAULTS', '/defaults')}/group/${id}`, 
     stats: fromEnv('EXPO_PUBLIC_ENDPOINT_DEFAULT_STATS', '/defaults/stats') 
+  },
+  dashboard: {
+    summary: fromEnv('EXPO_PUBLIC_ENDPOINT_DASHBOARD', '/dashboard'),
   },
 } as const;

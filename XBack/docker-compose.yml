@@ -86,11 +86,6 @@ services:
       - redis-prod
     networks:
       - xsusu-prod
-    deploy:
-      replicas: 2
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
 volumes:
   postgres_prod_data:

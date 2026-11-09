@@ -1,18 +1,54 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  ActivityIndicator,
-} from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import { groupService } from '../../services/groupService';
+import Animated, { FadeIn, FadeInLeft, FadeOut } from 'react-native-reanimated';
+import { groupService, type Group } from '../../services/groupService';
+import { useTheme } from '../../hooks/useTheme';
+import { useToast } from '../../hooks/useToast';
+import { useHaptics } from '../../hooks/useHaptics';
+import { staggerDelay } from '../../theme';
+import {
+  Screen,
+  Text,
+  Card,
+  Chip,
+  Badge,
+  Avatar,
+  Button,
+  Skeleton,
+  EmptyState,
+  ScreenHeader,
+} from '../../components/ui';
+import { formatCurrency, formatDate, formatPhone } from '../../utils/formatters';
+
+/** One row of `GET /groups/:id/schedule`. */
+interface ScheduleEntry {
+  position: number;
+  name: string;
+  phone: string;
+  hasReceived: boolean;
+  payoutDate: string | null;
+  isToday: boolean;
+  isPast: boolean;
+}
+
+/** Scroll offset past which the "jump to today" pill appears. */
+const JUMP_THRESHOLD = 240;
 
 export function ScheduleScreen() {
+  const theme = useTheme();
+  const toast = useToast();
+  const haptics = useHaptics();
+  const scrollRef = useRef<ScrollView>(null);
+  const todayOffset = useRef(0);
+
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [groups, setGroups] = useState<any[]>([]);
-  const [schedule, setSchedule] = useState<any[]>([]);
-  const [groupInfo, setGroupInfo] = useState<any>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleEntry[]>([]);
+  const [groupInfo, setGroupInfo] = useState<Group | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showJump, setShowJump] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -30,13 +66,13 @@ export function ScheduleScreen() {
     try {
       const allGroups = await groupService.list();
       setGroups(allGroups);
-      const active = allGroups.find((g: any) => g.status === 'ACTIVE');
+      const active = allGroups.find((g: Group) => g.status === 'ACTIVE');
       if (active && !selectedGroupId) {
         setSelectedGroupId(active.id);
         setGroupInfo(active);
       }
     } catch (error) {
-      console.error('Failed to fetch groups:', error);
+      toast.fromError(error, 'Failed to load your groups.');
     } finally {
       setLoading(false);
     }
@@ -45,183 +81,237 @@ export function ScheduleScreen() {
   const fetchSchedule = async (groupId: string) => {
     try {
       setSchedule(await groupService.schedule(groupId));
-      
+
       const group = groups.find(g => g.id === groupId);
       if (group) setGroupInfo(group);
     } catch (error) {
-      console.error('Failed to fetch schedule:', error);
+      toast.fromError(error, 'Failed to load the payout schedule.');
     }
+  };
+
+  const jumpToToday = () => {
+    haptics.light();
+    scrollRef.current?.scrollTo({
+      // Leave a little headroom so today's card is not flush with the header.
+      y: Math.max(0, todayOffset.current - 80),
+      animated: true,
+    });
   };
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563EB" />
-      </View>
+      <Screen padded>
+        <ScreenHeader title="Payout schedule" />
+        <View style={{ gap: theme.spacing.lg }}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} height={92} radius="xl" />
+          ))}
+        </View>
+      </Screen>
     );
   }
 
   if (!groupInfo) {
     return (
-      <View style={styles.emptyContainer}>
-        <Ionicons name="calendar-outline" size={64} color="#D1D5DB" />
-        <Text style={styles.emptyTitle}>No Active Group</Text>
-        <Text style={styles.emptySubtitle}>
-          Join an active Susu group to see the payout schedule
-        </Text>
-      </View>
+      <Screen padded>
+        <ScreenHeader title="Payout schedule" />
+        <EmptyState
+          title="No active group"
+          message="Join an active Susu group to see when each member gets paid."
+        />
+      </Screen>
     );
   }
 
+  const activeGroups = groups.filter(g => g.status === 'ACTIVE');
+  const dailyPayout = groupInfo.dailyPayout;
+
   return (
-    <ScrollView style={styles.container}>
-      {/* Group Selector */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.groupSelector}>
-        {groups.filter(g => g.status === 'ACTIVE').map((group) => (
-          <TouchableOpacity
-            key={group.id}
-            style={[styles.groupChip, selectedGroupId === group.id && styles.groupChipActive]}
-            onPress={() => setSelectedGroupId(group.id)}
-          >
-            <Text style={[styles.groupChipText, selectedGroupId === group.id && styles.groupChipTextActive]}>
-              {group.name}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+    <Screen>
+      <ScrollView
+        ref={scrollRef}
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={32}
+        onScroll={event => {
+          const next = event.nativeEvent.contentOffset.y > JUMP_THRESHOLD;
+          if (next !== showJump) setShowJump(next);
+        }}
+        contentContainerStyle={{
+          paddingHorizontal: theme.screenPadding,
+          paddingBottom: theme.spacing['5xl'],
+          gap: theme.spacing.lg,
+        }}
+      >
+        <ScreenHeader
+          title="Payout schedule"
+          subtitle={`${groupInfo.totalDays} days · ${formatCurrency(dailyPayout)} per payout`}
+        />
 
-      {/* Schedule Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Payout Schedule</Text>
-        <Text style={styles.headerSubtitle}>
-          {groupInfo.totalDays} days · GHS {groupInfo.dailyPayout?.toFixed(2)} per payout
-        </Text>
-        <View style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
-            <Text style={styles.legendText}>Paid Out</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#2563EB' }]} />
-            <Text style={styles.legendText}>Today</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: '#F3F4F6' }]} />
-            <Text style={styles.legendText}>Upcoming</Text>
-          </View>
+        {activeGroups.length > 1 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: theme.spacing.sm }}
+          >
+            {activeGroups.map(group => (
+              <Chip
+                key={group.id}
+                label={group.name}
+                selected={selectedGroupId === group.id}
+                onPress={() => setSelectedGroupId(group.id)}
+                accessibilityLabel={`Show schedule for ${group.name}`}
+              />
+            ))}
+          </ScrollView>
+        ) : null}
+
+        {/* Legend */}
+        <View style={[styles.legend, { gap: theme.spacing.lg }]}>
+          <LegendItem color={theme.colors.success} label="Paid out" />
+          <LegendItem color={theme.colors.primary} label="Today" />
+          <LegendItem color={theme.colors.border} label="Upcoming" />
         </View>
-      </View>
 
-      {/* Timeline */}
-      <View style={styles.timeline}>
-        {schedule.map((item) => (
-          <View
-            key={item.position}
-            style={[
-              styles.timelineItem,
-              item.isToday && styles.timelineItemToday,
-              item.isPast && styles.timelineItemPast,
-            ]}
-          >
-            <View style={styles.timelineLeft}>
-              <View style={[
-                styles.timelineDot,
-                item.isToday && styles.timelineDotToday,
-                item.isPast && styles.timelineDotPast,
-              ]}>
-                {item.hasReceived ? (
-                  <Ionicons name="checkmark" size={14} color="#FFFFFF" />
-                ) : item.isToday ? (
-                  <Text style={styles.dotTodayText}>●</Text>
-                ) : (
-                  <Text style={styles.dotNumber}>{item.position}</Text>
-                )}
-              </View>
-              {item.position < schedule.length && (
-                <View style={[
-                  styles.timelineLine,
-                  item.isPast && styles.timelineLinePast,
-                ]} />
-              )}
-            </View>
-
-            <View style={styles.timelineContent}>
-              <View style={styles.timelineCard}>
-                <View style={styles.timelineHeader}>
-                  <Text style={[styles.timelineName, item.isToday && styles.timelineNameToday]}>
-                    {item.name}
-                  </Text>
-                  {item.isToday && (
-                    <View style={styles.todayBadge}>
-                      <Text style={styles.todayBadgeText}>TODAY</Text>
-                    </View>
+        {/* Timeline */}
+        <View>
+          {schedule.map((entry, index) => (
+            <Animated.View
+              key={entry.position}
+              entering={FadeInLeft.delay(staggerDelay(index)).duration(340)}
+              onLayout={event => {
+                if (entry.isToday) todayOffset.current = event.nativeEvent.layout.y;
+              }}
+              style={styles.timelineRow}
+            >
+              {/* Rail */}
+              <View style={styles.rail}>
+                <View
+                  style={[
+                    styles.node,
+                    {
+                      borderRadius: theme.radius.full,
+                      backgroundColor: entry.hasReceived
+                        ? theme.colors.success
+                        : entry.isToday
+                          ? theme.colors.primary
+                          : theme.colors.surfaceSunken,
+                      // Today's node is enlarged and ringed to anchor the eye.
+                      width: entry.isToday ? 34 : 28,
+                      height: entry.isToday ? 34 : 28,
+                      borderWidth: entry.isToday ? 3 : 0,
+                      borderColor: theme.colors.primarySubtle,
+                    },
+                  ]}
+                >
+                  {entry.hasReceived ? (
+                    <Ionicons name="checkmark" size={15} color={theme.colors.onPrimary} />
+                  ) : (
+                    <Text
+                      variant="captionSmall"
+                      color={entry.isToday ? theme.colors.onPrimary : theme.colors.textSecondary}
+                    >
+                      {entry.position}
+                    </Text>
                   )}
                 </View>
-                <Text style={styles.timelinePhone}>{item.phone}</Text>
-                <Text style={styles.timelineAmount}>
-                  GHS {groupInfo.dailyPayout?.toFixed(2)}
-                </Text>
-                {item.hasReceived && item.payoutDate && (
-                  <Text style={styles.timelineDate}>
-                    Paid: {new Date(item.payoutDate).toLocaleDateString()}
-                  </Text>
-                )}
-              </View>
-            </View>
-          </View>
-        ))}
-      </View>
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+                {index < schedule.length - 1 ? (
+                  <View
+                    style={[
+                      styles.connector,
+                      {
+                        backgroundColor: entry.isPast
+                          ? theme.colors.success
+                          : theme.colors.border,
+                      },
+                    ]}
+                  />
+                ) : null}
+              </View>
+
+              {/* Card */}
+              <View style={[styles.timelineBody, { paddingBottom: theme.spacing.lg }]}>
+                <Card
+                  variant={entry.isToday ? 'elevated' : 'outlined'}
+                  padding="md"
+                  style={entry.isPast && !entry.isToday ? styles.past : undefined}
+                >
+                  <View style={[styles.cardRow, { gap: theme.spacing.md }]}>
+                    <Avatar name={entry.name} size="md" />
+
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <View style={[styles.cardRow, { gap: theme.spacing.sm }]}>
+                        <Text variant="h4" numberOfLines={1} style={{ flexShrink: 1 }}>
+                          {entry.name}
+                        </Text>
+                        {entry.isToday ? <Badge label="Today" tone="brand" size="sm" /> : null}
+                      </View>
+
+                      {entry.phone ? (
+                        <Text variant="mono" tone="tertiary" numberOfLines={1}>
+                          {formatPhone(entry.phone)}
+                        </Text>
+                      ) : null}
+
+                      <Text variant="bodyMedium" tone={entry.hasReceived ? 'success' : 'brand'}>
+                        {formatCurrency(dailyPayout)}
+                      </Text>
+
+                      {entry.hasReceived && entry.payoutDate ? (
+                        <Text variant="captionSmall" tone="tertiary">
+                          Paid {formatDate(entry.payoutDate)}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                </Card>
+              </View>
+            </Animated.View>
+          ))}
+        </View>
+      </ScrollView>
+
+      {showJump ? (
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          exiting={FadeOut.duration(150)}
+          style={styles.jumpWrapper}
+        >
+          <Button
+            label="Jump to today"
+            onPress={jumpToToday}
+            variant="secondary"
+            size="sm"
+            icon="arrow-up-circle"
+            accessibilityHint="Scrolls to today's payout"
+          />
+        </Animated.View>
+      ) : null}
+    </Screen>
+  );
+}
+
+function LegendItem({ color, label }: { color: string; label: string }) {
+  return (
+    <View style={styles.legendItem}>
+      <View style={[styles.legendDot, { backgroundColor: color }]} />
+      <Text variant="captionSmall" tone="secondary">
+        {label}
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
-  emptyTitle: { fontSize: 20, fontWeight: '600', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8 },
-  groupSelector: { paddingHorizontal: 16, paddingVertical: 12 },
-  groupChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#F3F4F6', marginRight: 8 },
-  groupChipActive: { backgroundColor: '#2563EB' },
-  groupChipText: { fontSize: 14, fontWeight: '500', color: '#4B5563' },
-  groupChipTextActive: { color: '#FFFFFF' },
-  header: { padding: 16 },
-  headerTitle: { fontSize: 24, fontWeight: '700' },
-  headerSubtitle: { fontSize: 14, color: '#6B7280', marginTop: 4 },
-  legend: { flexDirection: 'row', gap: 16, marginTop: 12 },
+  legend: { flexDirection: 'row', alignItems: 'center' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontSize: 12, color: '#6B7280' },
-  timeline: { paddingHorizontal: 16 },
-  timelineItem: { flexDirection: 'row', marginBottom: 4 },
-  timelineItemToday: {},
-  timelineItemPast: { opacity: 0.7 },
-  timelineLeft: { alignItems: 'center', width: 36 },
-  timelineDot: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: '#F3F4F6',
-    justifyContent: 'center', alignItems: 'center', zIndex: 1,
-  },
-  timelineDotToday: { backgroundColor: '#2563EB', width: 32, height: 32, borderRadius: 16 },
-  timelineDotPast: { backgroundColor: '#10B981' },
-  dotNumber: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
-  dotTodayText: { fontSize: 18, color: '#FFFFFF' },
-  timelineLine: { width: 2, flex: 1, backgroundColor: '#E5E7EB', marginTop: 4 },
-  timelineLinePast: { backgroundColor: '#10B981' },
-  timelineContent: { flex: 1, marginLeft: 12, paddingBottom: 16 },
-  timelineCard: {
-    backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12,
-    elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 2,
-  },
-  timelineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  timelineName: { fontSize: 16, fontWeight: '600' },
-  timelineNameToday: { color: '#2563EB', fontSize: 18 },
-  todayBadge: { backgroundColor: '#2563EB', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
-  todayBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700' },
-  timelinePhone: { fontSize: 13, color: '#6B7280', marginTop: 4 },
-  timelineAmount: { fontSize: 18, fontWeight: '700', color: '#10B981', marginTop: 6 },
-  timelineDate: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
+  cardRow: { flexDirection: 'row', alignItems: 'center' },
+  timelineRow: { flexDirection: 'row' },
+  rail: { width: 40, alignItems: 'center' },
+  node: { alignItems: 'center', justifyContent: 'center', zIndex: 1 },
+  connector: { width: 2, flex: 1, marginVertical: 4 },
+  timelineBody: { flex: 1, marginLeft: 8 },
+  past: { opacity: 0.65 },
+  jumpWrapper: { position: 'absolute', bottom: 24, alignSelf: 'center' },
 });

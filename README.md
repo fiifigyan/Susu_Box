@@ -440,8 +440,16 @@ Susu_Box/
 │   │   │   ├── AuthContext.tsx
 │   │   │   └── SecurityContext.tsx
 │   │   │
-│   │   ├── services/
-│   │   │   └── api.ts
+│   ├── services/
+│   │   ├── api.ts
+│   │   ├── authService.ts
+│   │   ├── depositService.ts
+│   │   ├── defaultService.ts
+│   │   ├── groupsService.ts
+│   │   ├── contributionsService.ts
+│   │   ├── paymentsService.ts
+│   │   ├── invitesService.ts
+│   │   ├── notificationsService.ts
 │   │   │
 │   │   ├── hooks/
 │   │   │   ├── useGroup.ts

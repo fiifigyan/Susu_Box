@@ -5,6 +5,8 @@ import { environment } from '../config/environment';
 import { generateOTP, hashPhone } from '../utils/encryption';
 import { tokenGenerator } from '../utils/tokenGenerator';
 import { logger } from '../utils/logger';
+import { notificationService } from './notification.service';
+import { getKey, setWithExpiry } from '../config/redis';
 
 export class AuthService {
   async register(data: {
@@ -50,6 +52,28 @@ export class AuthService {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
       },
     });
+
+    const pendingInvites = await prisma.pendingInvite.findMany({
+      where: {
+        phoneHash: hashPhone(data.phone),
+        accepted: false,
+        expiresAt: { gt: new Date() },
+      },
+      include: { group: true },
+    });
+
+    await Promise.all(
+      pendingInvites.map((invite) =>
+        notificationService.send(
+          user.id,
+          'GROUP_INVITE',
+          'You have a group invitation',
+          `You were invited to join "${invite.group.name}". Open Groups to accept the invitation.`,
+          invite.groupId,
+          { inviteCode: invite.inviteCode, position: invite.position },
+        )
+      )
+    );
 
     // TODO: Send OTP via email/SMS
     logger.info(`OTP for ${data.email}: ${otp}`);
@@ -164,6 +188,11 @@ export class AuthService {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 });
 
+    const cooldownKey = `auth:otp-resend:${email.toLowerCase()}`;
+    if (await getKey(cooldownKey)) {
+      throw Object.assign(new Error('Please wait before requesting another code'), { statusCode: 429 });
+    }
+
     const otp = generateOTP();
     await prisma.oTP.create({
       data: {
@@ -174,7 +203,56 @@ export class AuthService {
       },
     });
 
+    await setWithExpiry(cooldownKey, '1', 60);
+
     logger.info(`New OTP for ${email}: ${otp}`);
+  }
+
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return;
+
+    const cooldownKey = `auth:password-reset:${email.toLowerCase()}`;
+    if (await getKey(cooldownKey)) return;
+
+    const otp = generateOTP();
+    await prisma.oTP.create({
+      data: {
+        code: otp,
+        userId: user.id,
+        purpose: 'PASSWORD_RESET',
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      },
+    });
+    await setWithExpiry(cooldownKey, '1', 60);
+    logger.info(`Password reset OTP for ${email}: ${otp}`);
+  }
+
+  async resetPassword(data: { email: string; otp: string; password: string }): Promise<void> {
+    const user = await prisma.user.findUnique({ where: { email: data.email } });
+    if (!user) throw Object.assign(new Error('Invalid or expired reset code'), { statusCode: 400 });
+
+    const otpRecord = await prisma.oTP.findFirst({
+      where: {
+        userId: user.id,
+        code: data.otp,
+        purpose: 'PASSWORD_RESET',
+        used: false,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!otpRecord) throw Object.assign(new Error('Invalid or expired reset code'), { statusCode: 400 });
+
+    const password = await bcrypt.hash(data.password, environment.BCRYPT_SALT_ROUNDS);
+    await prisma.$transaction([
+      prisma.oTP.update({ where: { id: otpRecord.id }, data: { used: true } }),
+      prisma.user.update({
+        where: { id: user.id },
+        data: { password, failedLoginAttempts: 0, lockedUntil: null },
+      }),
+      prisma.refreshToken.updateMany({ where: { userId: user.id, revoked: false }, data: { revoked: true } }),
+    ]);
   }
 
   async refreshAccessToken(refreshToken: string) {

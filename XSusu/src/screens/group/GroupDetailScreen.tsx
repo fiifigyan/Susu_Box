@@ -1,20 +1,49 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator,
-} from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { CommonActions, useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../../types/navigation';
-import { groupService } from '../../services/groupService';
-import { useFocusEffect } from '@react-navigation/native';
+import { groupService, type Group, type GroupMember } from '../../services/groupService';
+import { useTheme } from '../../hooks/useTheme';
+import { useToast } from '../../hooks/useToast';
+import { useHaptics } from '../../hooks/useHaptics';
+import { staggerDelay, type Gradient } from '../../theme';
+import {
+  Screen,
+  Text,
+  Card,
+  Button,
+  Badge,
+  Chip,
+  Avatar,
+  Divider,
+  Skeleton,
+  SkeletonList,
+  ErrorState,
+  ProgressRing,
+  IconButton,
+  BottomSheet,
+  type BadgeTone,
+} from '../../components/ui';
+import { formatCurrency, formatPhone } from '../../utils/formatters';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'GroupDetail'>;
 
 export function GroupDetailScreen({ route, navigation }: Props) {
   const { groupId } = route.params;
-  const [group, setGroup] = useState<any>(null);
+  const theme = useTheme();
+  const toast = useToast();
+  const haptics = useHaptics();
+  const insets = useSafeAreaInsets();
+
+  const [group, setGroup] = useState<Group | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [detailMember, setDetailMember] = useState<GroupMember | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -26,7 +55,7 @@ export function GroupDetailScreen({ route, navigation }: Props) {
     try {
       setGroup(await groupService.get(groupId));
     } catch (error) {
-      console.error('Failed to fetch group:', error);
+      toast.fromError(error, 'Failed to load this group.');
     } finally {
       setLoading(false);
     }
@@ -36,10 +65,11 @@ export function GroupDetailScreen({ route, navigation }: Props) {
     setStarting(true);
     try {
       await groupService.start(groupId);
-      Alert.alert('Success', 'Group has started!');
+      haptics.celebrate();
+      toast.success('Group has started!', { silent: true });
       fetchGroupDetails();
-    } catch (error: any) {
-      Alert.alert('Error', error.message);
+    } catch (error) {
+      toast.fromError(error, 'Could not start the group.');
     } finally {
       setStarting(false);
     }
@@ -47,158 +77,379 @@ export function GroupDetailScreen({ route, navigation }: Props) {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563EB" />
-      </View>
+      <Screen padded edges={['top']}>
+        <View style={{ gap: theme.spacing.xl, paddingTop: theme.spacing.xl }}>
+          <Skeleton height={168} radius="2xl" />
+          <Skeleton height={80} radius="xl" />
+          <SkeletonList count={3} />
+        </View>
+      </Screen>
     );
   }
 
   if (!group) {
     return (
-      <View style={styles.emptyContainer}>
-        <Text>Group not found</Text>
-      </View>
+      <Screen padded edges={['top']}>
+        <ErrorState
+          title="Group not found"
+          message="This group may have been removed, or you no longer have access to it."
+          onRetry={() => navigation.goBack()}
+          retryLabel="Go back"
+        />
+      </Screen>
     );
   }
 
   const isForming = group.status === 'FORMING';
   const isActive = group.status === 'ACTIVE';
+  const members = group.members ?? [];
+  const progress = group.totalDays > 0 ? group.currentDay / group.totalDays : 0;
+
+  const statusPresentation: Record<string, { tone: BadgeTone; gradient: Gradient }> = {
+    FORMING: { tone: 'warning', gradient: theme.colors.gradientGold },
+    ACTIVE: { tone: 'success', gradient: theme.colors.gradientBalance },
+    COMPLETED: { tone: 'info', gradient: theme.colors.gradientSuccess },
+    CANCELLED: { tone: 'error', gradient: theme.colors.gradientNeutral },
+  };
+  const presentation = statusPresentation[group.status] ?? statusPresentation.FORMING;
+
+  const filledPositions = members.length;
+  const openPositions = Math.max(0, group.memberCount - filledPositions);
 
   return (
-    <ScrollView style={styles.container}>
-      {/* Header */}
-      <View style={[styles.header, isActive && styles.headerActive]}>
-        <Text style={styles.headerTitle}>{group.name}</Text>
-        <View style={styles.statusBadge}>
-          <Text style={styles.statusText}>{group.status}</Text>
-        </View>
-        {group.description && <Text style={styles.description}>{group.description}</Text>}
-      </View>
-
-      {/* Stats */}
-      <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue}>{group.memberCount}</Text>
-          <Text style={styles.statLabel}>Members</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue}>GHS {group.dailyContribution}</Text>
-          <Text style={styles.statLabel}>Daily Pay</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue}>GHS {group.dailyPayout}</Text>
-          <Text style={styles.statLabel}>Payout</Text>
-        </View>
-      </View>
-
-      {/* Start Button */}
-      {isForming && (
-        <TouchableOpacity
-          style={[styles.startButton, starting && styles.buttonDisabled]}
-          onPress={handleStartGroup}
-          disabled={starting}
+    <Screen edges={[]}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: theme.spacing['5xl'] }}
+      >
+        {/* Gradient hero, extending under the status bar */}
+        <LinearGradient
+          colors={presentation.gradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{
+            paddingTop: insets.top + theme.spacing.md,
+            paddingBottom: theme.spacing['3xl'],
+            paddingHorizontal: theme.screenPadding,
+            gap: theme.spacing.lg,
+          }}
         >
-          {starting ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <>
-              <Ionicons name="play-circle" size={24} color="#FFFFFF" />
-              <Text style={styles.startButtonText}>Start Group</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      )}
+          <View style={styles.heroTop}>
+            <IconButton
+              icon="chevron-back"
+              onPress={() => navigation.goBack()}
+              accessibilityLabel="Go back"
+              color={theme.colors.textInverse}
+              style={{ marginLeft: -12 }}
+            />
+            <Badge label={group.status} tone={presentation.tone} size="sm" solid />
+          </View>
 
-      {/* Active Actions */}
-      {isActive && (
-        <View style={styles.quickActions}>
-          <TouchableOpacity style={styles.actionButton} onPress={() => navigation.navigate('Main', { screen: 'Today' } as any)}>
-            <Ionicons name="today" size={20} color="#FFFFFF" />
-            <Text style={styles.actionText}>Today's Check-in</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.scheduleButton]}
-            onPress={() => navigation.navigate('Defaulters', { groupId })}
-          >
-            <Ionicons name="warning" size={20} color="#2563EB" />
-            <Text style={[styles.actionText, styles.scheduleText]}>Defaulters</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.scheduleButton]}
-            onPress={() => navigation.navigate('SecurityDeposit', { groupId })}
-          >
-            <Ionicons name="shield-checkmark" size={20} color="#2563EB" />
-            <Text style={[styles.actionText, styles.scheduleText]}>Deposit</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.scheduleButton]}
-            onPress={() => navigation.navigate('InviteMembers', { groupId })}
-          >
-            <Ionicons name="person-add" size={20} color="#2563EB" />
-            <Text style={[styles.actionText, styles.scheduleText]}>Invite</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Members */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Members ({group.members?.length || 0})</Text>
-        {group.members?.map((member: any) => (
-          <View key={member.id} style={styles.memberCard}>
-            <View style={styles.memberLeft}>
-              <Text style={styles.memberPosition}>#{member.position}</Text>
-              <View>
-                <Text style={styles.memberName}>
-                  {member.user?.firstName} {member.user?.lastName}
+          <View style={[styles.heroBody, { gap: theme.spacing.lg }]}>
+            <View style={{ flex: 1, gap: theme.spacing.xs }}>
+              <Text variant="h1" color={theme.colors.textInverse} numberOfLines={2}>
+                {group.name}
+              </Text>
+              {group.description ? (
+                <Text variant="bodySmall" color={`${theme.colors.textInverse}B3`} numberOfLines={3}>
+                  {group.description}
                 </Text>
-                <Text style={styles.memberPhone}>{member.user?.phone}</Text>
-              </View>
+              ) : null}
             </View>
-            {member.hasReceivedPayout && (
-              <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+
+            <ProgressRing
+              progress={progress}
+              size={84}
+              thickness={8}
+              color={theme.colors.textInverse}
+              trackColor={`${theme.colors.textInverse}33`}
+              accessibilityLabel={`Day ${group.currentDay} of ${group.totalDays}`}
+            >
+              <Text variant="captionSmall" color={theme.colors.textInverse}>
+                Day
+              </Text>
+              <Text variant="h3" color={theme.colors.textInverse}>
+                {group.currentDay}
+              </Text>
+            </ProgressRing>
+          </View>
+        </LinearGradient>
+
+        <View
+          style={{
+            paddingHorizontal: theme.screenPadding,
+            gap: theme.spacing.xl,
+            // Pulls the stats grid up so it overlaps the hero.
+            marginTop: -theme.spacing['2xl'],
+          }}
+        >
+          {/* Stats */}
+          <View style={styles.statsGrid}>
+            <StatTile
+              icon="people"
+              label="Members"
+              value={`${filledPositions}/${group.memberCount}`}
+              tint={theme.colors.primary}
+            />
+            <StatTile
+              icon="cash"
+              label="Daily pay"
+              value={formatCurrency(group.dailyContribution)}
+              tint={theme.colors.accent}
+            />
+            <StatTile
+              icon="gift"
+              label="Payout"
+              value={formatCurrency(group.dailyPayout)}
+              tint={theme.colors.secondary}
+            />
+            <StatTile
+              icon="calendar"
+              label="Duration"
+              value={`${group.totalDays} days`}
+              tint={theme.colors.info}
+            />
+          </View>
+
+          {/* Start */}
+          {isForming ? (
+            <Card variant="outlined">
+              <View style={{ gap: theme.spacing.md }}>
+                <Text variant="h3">Ready to start?</Text>
+                <Text variant="bodySmall" tone="secondary">
+                  {openPositions > 0
+                    ? `${openPositions} position${openPositions === 1 ? '' : 's'} still open. All ${group.memberCount} members must join before the group can start.`
+                    : 'All positions are filled. Starting the group begins day 1 and locks the rotation.'}
+                </Text>
+                <Button
+                  label="Start group"
+                  onPress={() => void handleStartGroup()}
+                  loading={starting}
+                  icon="play-circle"
+                  fullWidth
+                  accessibilityHint="Begins day one of the rotation"
+                />
+                <Button
+                  label="Invite members"
+                  onPress={() => navigation.navigate('InviteMembers', { groupId })}
+                  variant="secondary"
+                  icon="person-add"
+                  fullWidth
+                />
+                <Button
+                  label="View surplus allocation"
+                  onPress={() => navigation.navigate('SurplusAllocation', { groupId })}
+                  variant="secondary"
+                  icon="pie-chart"
+                  fullWidth
+                />
+              </View>
+            </Card>
+          ) : null}
+
+          {/* Quick actions */}
+          {isActive ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: theme.spacing.sm }}
+            >
+              <Chip
+                label="Today's check-in"
+                icon="today"
+                selected
+                onPress={() =>
+                  // Targets the Today tab inside the Main tab navigator. Routed
+                  // through CommonActions because `Main` takes no params in the
+                  // shared param list.
+                  navigation.dispatch(
+                    CommonActions.navigate({ name: 'Main', params: { screen: 'Today' } })
+                  )
+                }
+                accessibilityHint="Opens today's check-in"
+              />
+              <Chip
+                label="Defaulters"
+                icon="warning"
+                tone="neutral"
+                onPress={() => navigation.navigate('Defaulters', { groupId })}
+              />
+              <Chip
+                label="Deposit"
+                icon="shield-checkmark"
+                tone="neutral"
+                onPress={() => navigation.navigate('SecurityDeposit', { groupId })}
+              />
+              <Chip
+                label="Invite"
+                icon="person-add"
+                tone="neutral"
+                onPress={() => navigation.navigate('InviteMembers', { groupId })}
+              />
+            </ScrollView>
+          ) : null}
+
+          {/* Members */}
+          <View style={{ gap: theme.spacing.md }}>
+            <View style={styles.sectionHeader}>
+              <Text variant="h2">Members</Text>
+              <Badge label={`${filledPositions} of ${group.memberCount}`} tone="neutral" size="sm" />
+            </View>
+
+            {members.length === 0 ? (
+              <Card variant="filled" padding="md">
+                <Text variant="bodySmall" tone="secondary">
+                  No members have joined yet. Share an invite to fill the rotation.
+                </Text>
+              </Card>
+            ) : (
+              members.map((member, index) => {
+                const name = [member.user?.firstName, member.user?.lastName]
+                  .filter(Boolean)
+                  .join(' ');
+
+                return (
+                  <Animated.View
+                    key={member.id}
+                    entering={FadeInDown.delay(staggerDelay(index)).duration(320)}
+                  >
+                    <Card
+                      variant="outlined"
+                      padding="md"
+                      onPress={() => setDetailMember(member)}
+                      accessibilityLabel={`${name || 'Member'}, position ${member.position}`}
+                      accessibilityHint="Shows member details"
+                    >
+                      <View style={[styles.memberRow, { gap: theme.spacing.md }]}>
+                        <Avatar name={name} size="md" />
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <Text variant="h4" numberOfLines={1}>
+                            {name || 'Pending member'}
+                          </Text>
+                          <Text variant="mono" tone="tertiary" numberOfLines={1}>
+                            {member.user?.phone ? formatPhone(member.user.phone) : '—'}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                          <Badge label={`#${member.position}`} tone="neutral" size="sm" />
+                          {member.hasReceivedPayout ? (
+                            <Ionicons
+                              name="checkmark-circle"
+                              size={18}
+                              color={theme.colors.success}
+                            />
+                          ) : null}
+                        </View>
+                      </View>
+                    </Card>
+                  </Animated.View>
+                );
+              })
             )}
           </View>
-        ))}
-      </View>
+        </View>
+      </ScrollView>
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+      <BottomSheet
+        visible={detailMember !== null}
+        onClose={() => setDetailMember(null)}
+        title={
+          detailMember
+            ? [detailMember.user?.firstName, detailMember.user?.lastName]
+                .filter(Boolean)
+                .join(' ') || 'Member'
+            : undefined
+        }
+        subtitle={detailMember ? `Position #${detailMember.position}` : undefined}
+      >
+        {detailMember ? (
+          <View style={{ gap: theme.spacing.lg }}>
+            <View style={[styles.memberRow, { gap: theme.spacing.lg }]}>
+              <Avatar
+                name={[detailMember.user?.firstName, detailMember.user?.lastName]
+                  .filter(Boolean)
+                  .join(' ')}
+                size="xl"
+              />
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="caption" tone="secondary">
+                  Mobile money
+                </Text>
+                <Text variant="mono">
+                  {detailMember.user?.phone ? formatPhone(detailMember.user.phone) : 'Not provided'}
+                </Text>
+              </View>
+            </View>
+
+            <Divider />
+
+            <View style={styles.sectionHeader}>
+              <Text variant="bodySmall" tone="secondary">
+                Payout status
+              </Text>
+              <Badge
+                label={detailMember.hasReceivedPayout ? 'Received' : 'Awaiting turn'}
+                tone={detailMember.hasReceivedPayout ? 'success' : 'warning'}
+                size="sm"
+              />
+            </View>
+
+            <View style={styles.sectionHeader}>
+              <Text variant="bodySmall" tone="secondary">
+                Payout amount
+              </Text>
+              <Text variant="h4">{formatCurrency(group.dailyPayout)}</Text>
+            </View>
+          </View>
+        ) : null}
+      </BottomSheet>
+    </Screen>
+  );
+}
+
+function StatTile({
+  icon,
+  label,
+  value,
+  tint,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  tint: string;
+}) {
+  const theme = useTheme();
+
+  return (
+    <View style={styles.statCell}>
+      <Card variant="elevated" padding="md">
+        <View style={{ gap: theme.spacing.sm }}>
+          <View
+            style={[
+              styles.statIcon,
+              { backgroundColor: `${tint}1F`, borderRadius: theme.radius.sm },
+            ]}
+          >
+            <Ionicons name={icon} size={16} color={tint} />
+          </View>
+          <Text variant="h4" numberOfLines={1} tabular>
+            {value}
+          </Text>
+          <Text variant="captionSmall" tone="secondary">
+            {label}
+          </Text>
+        </View>
+      </Card>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { backgroundColor: '#F3F4F6', padding: 20 },
-  headerActive: { backgroundColor: '#EFF6FF' },
-  headerTitle: { fontSize: 24, fontWeight: '700' },
-  statusBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, alignSelf: 'flex-start', marginTop: 8 },
-  statusText: { fontSize: 12, fontWeight: '600', color: '#6B7280', textTransform: 'capitalize' },
-  description: { fontSize: 14, color: '#6B7280', marginTop: 8 },
-  statsRow: { flexDirection: 'row', paddingHorizontal: 16, marginTop: -16, gap: 8 },
-  statCard: { flex: 1, backgroundColor: '#FFFFFF', padding: 14, borderRadius: 10, alignItems: 'center', elevation: 2 },
-  statValue: { fontSize: 16, fontWeight: '700' },
-  statLabel: { fontSize: 11, color: '#6B7280', marginTop: 4 },
-  startButton: {
-    flexDirection: 'row', backgroundColor: '#10B981', marginHorizontal: 16, marginTop: 20,
-    padding: 16, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 8,
-  },
-  buttonDisabled: { opacity: 0.5 },
-  startButtonText: { color: '#FFFFFF', fontSize: 18, fontWeight: '600' },
-  quickActions: { flexDirection: 'row', marginHorizontal: 16, marginTop: 20, gap: 10 },
-  actionButton: { flex: 1, flexDirection: 'row', backgroundColor: '#2563EB', padding: 14, borderRadius: 10, justifyContent: 'center', alignItems: 'center', gap: 6 },
-  scheduleButton: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#2563EB' },
-  actionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
-  scheduleText: { color: '#2563EB' },
-  section: { marginTop: 20, paddingHorizontal: 16 },
-  sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12 },
-  memberCard: {
-    backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8, marginBottom: 6,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-  },
-  memberLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  memberPosition: { fontSize: 14, fontWeight: '600', color: '#2563EB', width: 30 },
-  memberName: { fontSize: 15, fontWeight: '500' },
-  memberPhone: { fontSize: 12, color: '#6B7280' },
+  heroTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heroBody: { flexDirection: 'row', alignItems: 'center' },
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -6 },
+  statCell: { width: '50%', paddingHorizontal: 6, paddingBottom: 12 },
+  statIcon: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  memberRow: { flexDirection: 'row', alignItems: 'center' },
 });

@@ -2,10 +2,11 @@
   "expo": {
     "name": "XSusu",
     "slug": "XSusu",
+    "scheme": "xsusu",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.biigggx.xsusu"
@@ -27,7 +28,8 @@
     "plugins": [
       "expo-secure-store",
       "expo-font",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-image"
     ],
     "extra": {
       "eas": {

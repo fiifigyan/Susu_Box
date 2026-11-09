@@ -71,7 +71,10 @@ export class InviteController {
       const userId = (req as any).userId;
       const validatedData = joinByCodeSchema.parse(req.body);
 
-      const result = await inviteService.joinByInviteCode(validatedData.inviteCode, userId);
+      const code = validatedData.inviteCode.trim().toUpperCase();
+      const result = code.startsWith('XSU-')
+        ? await inviteService.joinByInviteCode(code, userId)
+        : await inviteService.joinByShareCode(code.replace(/^XSUSU:\/\/JOIN\//, ''), userId);
 
       res.status(200).json({
         success: true,

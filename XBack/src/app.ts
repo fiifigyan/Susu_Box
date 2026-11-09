@@ -23,6 +23,7 @@ import inviteRoutes from './routes/invite.routes';
 import notificationRoutes from './routes/notification.routes';
 import defaultRoutes from './routes/default.routes';
 import depositRoutes from './routes/deposit.routes';
+import dashboardRoutes from './routes/dashboard.routes';
 import { startDailyAutoChargeJob } from './jobs/dailyAutoCharge';
 import { startHeldBackReleaseJob } from './jobs/releaseHeldBack';
 import { startDailyDefaultCheckJob } from './jobs/dailyDefaultCheck';
@@ -119,6 +120,7 @@ app.use('/api/v1/invites', inviteRoutes);
 app.use('/api/v1/defaults', defaultRoutes);
 app.use('/api/v1/deposits', depositRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

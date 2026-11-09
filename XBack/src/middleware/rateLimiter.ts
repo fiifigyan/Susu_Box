@@ -50,7 +50,7 @@ export function createRateLimiter(config: RateLimitConfig) {
         // Rate limit exceeded
         const oldestRequest = await redisClient.zRange(key, 0, 0);
         const resetAt = oldestRequest.length > 0
-          ? parseInt(oldestRequest[0].split(':')[1]) + config.windowMs
+          ? parseInt(oldestRequest[0].split(':')[0], 10) + config.windowMs
           : now + config.windowMs;
         
         const retryAfterSeconds = Math.ceil((resetAt - now) / 1000);
@@ -143,6 +143,13 @@ export const otpRateLimiter = createRateLimiter({
   windowMs: 10 * 60 * 1000,
   maxRequests: 3,
   keyPrefix: 'ratelimit:otp',
+});
+
+/** Password reset requests and code submissions share a strict IP limit. */
+export const passwordResetRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 5,
+  keyPrefix: 'ratelimit:password-reset',
 });
 
 /**
